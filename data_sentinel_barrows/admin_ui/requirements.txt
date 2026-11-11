@@ -1,0 +1,8 @@
+dash[diskcache]>=2.17.0
+dash-bootstrap-components
+dash-mantine-components>=0.14.4
+dash-ag-grid>=31.0.0
+databricks-sql-connector
+pandas
+plotly
+databricks-sdk

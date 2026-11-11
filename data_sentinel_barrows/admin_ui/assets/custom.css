@@ -1,0 +1,1008 @@
+/* ══════════════════════════════════════════════════════════════════════
+   DataSentinel Admin UI — Custom CSS
+   Modernized with Dash Mantine Components + AG Grid
+   Base font: Inter/system | Dark theme
+   ══════════════════════════════════════════════════════════════════════ */
+
+
+/* ══ APP SHELL — horizontal (default) vs vertical sidebar mode ═════════ */
+
+.ds-shell-body {
+    display: block;
+}
+
+.ds-shell-vertical {
+    display: flex;
+    align-items: stretch;
+    min-height: 100vh;
+}
+
+.ds-shell-vertical #app-page-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.ds-sidebar {
+    width: 260px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    background-color: #1A1B1E;
+    border-right: 1px solid #373A40;
+    padding: 16px 12px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+}
+
+.ds-sidebar-brand {
+    display: flex;
+    align-items: center;
+    padding: 4px 8px 16px 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #373A40;
+}
+
+.ds-sidebar .nav-link {
+    color: #C1C2C5;
+    font-weight: 600;
+    font-size: 14px;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 2px;
+}
+
+.ds-sidebar .nav-link:hover {
+    background-color: #25262B;
+    color: #ffffff;
+}
+
+.ds-sidebar .nav-link.active {
+    background-color: #1a3a5c;
+    color: #87ceeb;
+}
+
+/* Icon-badge nav links (top-level + accordion items) */
+.ds-nav-link-icon {
+    display: flex !important;
+    align-items: center;
+    gap: 10px;
+}
+
+.ds-nav-label {
+    font-size: 14px;
+}
+
+.ds-sidebar-accordion .ds-nav-label {
+    font-size: 13px;
+}
+
+.ds-icon-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    font-size: 13px;
+    flex-shrink: 0;
+}
+
+.ds-sidebar-brand .ds-icon-badge {
+    width: 30px;
+    height: 30px;
+    font-size: 15px;
+    margin-right: 10px;
+}
+
+.ds-sidebar-accordion .ds-icon-badge {
+    width: 22px;
+    height: 22px;
+    font-size: 11px;
+    margin-right: 8px;
+}
+
+/* Accordion group headers: icon badge + label, replacing plain text titles */
+.ds-group-title {
+    display: flex;
+    align-items: center;
+}
+
+.ds-group-label {
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.ds-sidebar-tier-label {
+    color: #5C5F66;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding: 14px 8px 4px 8px;
+    border-top: 1px solid #2C2E33;
+    margin-top: 6px;
+}
+
+.ds-sidebar-tier-label:first-of-type {
+    border-top: none;
+    margin-top: 0;
+}
+
+.ds-sidebar-accordion .accordion-item {
+    background-color: transparent;
+    border: none;
+}
+
+.ds-sidebar-accordion .accordion-button {
+    background-color: transparent;
+    color: #C1C2C5;
+    font-weight: 600;
+    font-size: 13px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    box-shadow: none;
+}
+
+.ds-sidebar-accordion .accordion-button:hover {
+    background-color: #25262B;
+    color: #ffffff;
+}
+
+.ds-sidebar-accordion .accordion-button:not(.collapsed) {
+    background-color: #1a3a5c;
+    color: #87ceeb;
+    border-radius: 6px 6px 0 0;
+}
+
+.ds-sidebar-accordion .accordion-button::after {
+    filter: invert(1) grayscale(1) brightness(1.5);
+    width: 14px;
+    height: 14px;
+    background-size: 14px;
+}
+
+.ds-sidebar-accordion .accordion-body {
+    padding: 4px 0 8px 14px;
+}
+
+.ds-sidebar-accordion .accordion-body .nav-link {
+    font-size: 13px;
+    padding: 6px 10px;
+}
+
+
+/* ══ AG GRID — Alpine Dark Theme Overrides ═════════════════════════════ */
+
+.ag-theme-alpine-dark {
+    --ag-background-color       : #1A1B1E;
+    --ag-header-background-color: #25262B;
+    --ag-odd-row-background-color: #1A1B1E;
+    --ag-row-hover-color        : #2C2E33;
+    --ag-selected-row-background-color: #1a3a5c;
+    --ag-border-color           : #373A40;
+    --ag-header-foreground-color: #C1C2C5;
+    --ag-foreground-color       : #C1C2C5;
+    --ag-row-border-color       : #2C2E33;
+    --ag-font-size              : 14px;
+    --ag-font-family            : Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif;
+    --ag-header-height          : 42px;
+    --ag-row-height             : 40px;
+    --ag-cell-horizontal-padding: 12px;
+    --ag-grid-size              : 6px;
+    --ag-range-selection-border-color: #4a9edd;
+}
+
+.ag-theme-alpine-dark .ag-header-cell {
+    font-weight  : 600;
+    font-size    : 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.ag-theme-alpine-dark .ag-cell {
+    border-right : none;
+    line-height  : 40px;
+}
+
+.ag-theme-alpine-dark .ag-paging-panel {
+    border-top       : 1px solid #373A40;
+    background-color : #1A1B1E;
+    color            : #909296;
+}
+
+.ag-theme-alpine-dark .ag-filter-toolpanel {
+    background-color : #25262B;
+}
+
+.ag-theme-alpine-dark input[class^="ag-"] {
+    background-color : #25262B;
+    color            : #C1C2C5;
+    border-color     : #373A40;
+}
+
+/* ── AG Grid Row Status Coloring (via rowClassRules) ──────────────── */
+
+.ag-theme-alpine-dark .ag-row.row-critical .ag-cell {
+    color            : #ff6b6b !important;
+    background-color : #3d0000 !important;
+}
+
+.ag-theme-alpine-dark .ag-row.row-warning .ag-cell {
+    color            : #ffa500 !important;
+    background-color : #3d2000 !important;
+}
+
+.ag-theme-alpine-dark .ag-row.row-pass .ag-cell {
+    color            : #00c851 !important;
+    background-color : #002800 !important;
+}
+
+.ag-theme-alpine-dark .ag-row.row-error .ag-cell {
+    color            : #888888 !important;
+    background-color : #1a1a1a !important;
+}
+
+.ag-theme-alpine-dark .ag-row:hover {
+    filter: brightness(1.15);
+}
+
+/* ── AG Grid Tooltip Styling ──────────────────────────────────────── */
+
+.ag-theme-alpine-dark .ag-tooltip {
+    background-color : #25262B !important;
+    color            : #E0E0E0 !important;
+    border           : 1px solid #373A40 !important;
+    border-radius    : 6px !important;
+    padding          : 6px 10px !important;
+    font-size        : 13px !important;
+    max-width        : 400px !important;
+    box-shadow       : 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+}
+
+/* ── AG Grid Cell Selection Highlight ─────────────────────────────── */
+
+.ag-theme-alpine-dark .ag-cell-focus {
+    border-color: #4a9edd !important;
+}
+
+
+
+/* ── Navbar ─────────────────────────────────────────────────────────── */
+
+/* Main navbar brand text */
+.navbar-brand {
+    font-size   : 20px !important;
+    font-weight : bold !important;
+    color       : #ffffff !important;
+}
+
+/* Navbar links (Dashboard, AI Insights) */
+.navbar-nav .nav-link {
+    font-size   : 16px !important;
+    color       : #cccccc !important;
+    padding     : 8px 14px !important;
+}
+
+.navbar-nav .nav-link:hover {
+    color : #ffffff !important;
+}
+
+/* Navbar dropdown toggle labels (Agent 1, Agent 2 etc.) */
+.navbar-nav .dropdown-toggle {
+    font-size : 16px !important;
+    color     : #cccccc !important;
+}
+
+/* Dropdown menu items */
+.dropdown-menu {
+    background-color : #2b2b2b !important;
+    border           : 1px solid #555 !important;
+    font-size        : 15px !important;
+}
+
+.dropdown-item {
+    color       : #cccccc !important;
+    font-size   : 15px !important;
+    padding     : 8px 16px !important;
+}
+
+.dropdown-item:hover,
+.dropdown-item:focus {
+    background-color : #375a7f !important;
+    color            : #ffffff !important;
+}
+
+
+/* ── Page Headings ──────────────────────────────────────────────────── */
+
+/* H2 page titles */
+h2 {
+    font-size   : 28px !important;
+    font-weight : bold !important;
+    color       : #ffffff !important;
+}
+
+/* H5 card headers */
+h5 {
+    font-size   : 18px !important;
+    font-weight : bold !important;
+    color       : #ffffff !important;
+}
+
+/* H6 section labels */
+h6 {
+    font-size   : 16px !important;
+    font-weight : bold !important;
+    color       : #ffffff !important;
+}
+
+
+/* ── Card Bodies and Text ───────────────────────────────────────────── */
+
+.card {
+    background-color : #2b2b2b !important;
+    border-color     : #444 !important;
+}
+
+.card-header {
+    background-color : #343a40 !important;
+    border-color     : #444 !important;
+    color            : #ffffff !important;
+    font-size        : 16px !important;
+}
+
+.card-body {
+    font-size : 16px !important;
+}
+
+.card-body h3 {
+    font-size : 28px !important;
+    color     : inherit;
+}
+
+.card-body p {
+    font-size : 15px !important;
+}
+
+.card-body p.text-muted {
+    color     : #cccccc !important;
+    font-size : 15px !important;
+}
+
+.card.border-warning .card-body,
+.card.bg-warning .card-body {
+    color : #1a1a1a !important;
+}
+
+.card.border-warning .card-body h3,
+.card.border-warning .card-body p {
+    color : #1a1a1a !important;
+}
+
+
+/* ── Labels and Form Text ───────────────────────────────────────────── */
+
+label,
+.form-label {
+    font-size   : 15px !important;
+    font-weight : 500 !important;
+    color       : #ffffff !important;
+}
+
+.form-text {
+    font-size : 13px !important;
+    color     : #aaaaaa !important;
+}
+
+/* Input fields */
+.form-control,
+input[type="text"],
+input[type="number"],
+textarea {
+    font-size        : 15px !important;
+    background-color : #2b2b2b !important;
+    color            : #ffffff !important;
+    border-color     : #555 !important;
+}
+
+.form-control:focus,
+input:focus,
+textarea:focus {
+    background-color : #2b2b2b !important;
+    color            : #ffffff !important;
+    border-color     : #4a9edd !important;
+    box-shadow       : 0 0 0 0.2rem rgba(74, 158, 221, 0.25) !important;
+}
+
+
+/* ── Buttons ────────────────────────────────────────────────────────── */
+
+.btn {
+    font-size : 15px !important;
+    padding   : 8px 16px !important;
+}
+
+.btn-sm {
+    font-size : 13px !important;
+    padding   : 5px 10px !important;
+}
+
+.btn-lg {
+    font-size : 17px !important;
+    padding   : 10px 20px !important;
+}
+
+
+/* ── Badges ─────────────────────────────────────────────────────────── */
+
+.badge {
+    font-size   : 13px !important;
+    padding     : 5px 10px !important;
+    font-weight : 500 !important;
+}
+
+.fs-6 {
+    font-size : 14px !important;
+}
+
+
+/* ── Alerts ─────────────────────────────────────────────────────────── */
+
+.alert {
+    font-size : 15px !important;
+}
+
+.alert strong {
+    font-size : 15px !important;
+}
+
+
+/* ── AI Insights — Narrative Sections ──────────────────────────────── */
+
+/* Section card headers (📋 Executive Summary etc.) */
+.card-header h5 {
+    font-size   : 18px !important;
+    font-weight : bold !important;
+}
+
+/* Narrative body text */
+.card-body p {
+    font-size   : 16px !important;
+    line-height : 1.6 !important;
+}
+
+/* Narrative list items */
+.card-body li {
+    font-size   : 16px !important;
+    line-height : 1.6 !important;
+    margin-bottom : 6px !important;
+}
+
+/* AI summary panels (border-start sections) */
+.border-start {
+    font-size   : 16px !important;
+    line-height : 1.6 !important;
+}
+
+
+/* ── AI Summary Panel in Result Pages ──────────────────────────────── */
+
+/* AI Summary heading */
+.text-info,
+.text-success,
+.text-warning {
+    font-size : 16px !important;
+}
+
+/* AI body paragraphs */
+.border-start.border-info,
+.border-start.border-success,
+.border-start.border-warning {
+    font-size   : 15px !important;
+    line-height : 1.6 !important;
+    padding     : 10px 14px !important;
+}
+
+
+/* ── Tabs ───────────────────────────────────────────────────────────── */
+
+.nav-tabs .nav-link {
+    font-size : 15px !important;
+    padding   : 8px 16px !important;
+}
+
+.nav-tabs .nav-link.active {
+    font-size   : 15px !important;
+    font-weight : bold !important;
+}
+
+
+/* ── Dropdown Selectors (dcc.Dropdown) ──────────────────────────────── */
+
+.Select-control {
+    background-color : #2b2b2b !important;
+    border-color     : #555 !important;
+    color            : #ffffff !important;
+    font-size        : 15px !important;
+    min-height       : 40px !important;
+}
+
+.Select-value-label {
+    color     : #ffffff !important;
+    font-size : 15px !important;
+}
+
+.Select-placeholder {
+    color     : #aaaaaa !important;
+    font-size : 15px !important;
+}
+
+.Select-arrow {
+    border-top-color : #aaaaaa !important;
+}
+
+.Select-menu-outer {
+    background-color : #2b2b2b !important;
+    border-color     : #555 !important;
+    z-index          : 9999 !important;
+    font-size        : 15px !important;
+}
+
+.Select-option {
+    background-color : #2b2b2b !important;
+    color            : #ffffff !important;
+    font-size        : 15px !important;
+    padding          : 10px 14px !important;
+}
+
+.Select-option:hover,
+.Select-option.is-focused {
+    background-color : #375a7f !important;
+    color            : #ffffff !important;
+}
+
+.Select-option.is-selected {
+    background-color : #375a7f !important;
+    color            : #ffffff !important;
+}
+
+.Select-input input {
+    color     : #ffffff !important;
+    font-size : 15px !important;
+}
+
+.Select-control.is-disabled {
+    background-color : #1a1a1a !important;
+    opacity          : 0.6 !important;
+}
+
+.Select-value {
+    background-color : #375a7f !important;
+    border-color     : #375a7f !important;
+    color            : #ffffff !important;
+    font-size        : 14px !important;
+}
+
+.Select-value-icon {
+    border-right-color : #4a7aad !important;
+    color              : #ffffff !important;
+}
+
+
+/* ── Checklist and Radio Items ──────────────────────────────────────── */
+
+.form-check-label {
+    font-size : 15px !important;
+    color     : #ffffff !important;
+}
+
+
+/* ── Modal ──────────────────────────────────────────────────────────── */
+
+.modal-title {
+    font-size   : 18px !important;
+    font-weight : bold !important;
+    color       : #ffffff !important;
+}
+
+.modal-body {
+    font-size : 15px !important;
+}
+
+.modal-header {
+    background-color : #343a40 !important;
+    border-color     : #555 !important;
+}
+
+.modal-content {
+    background-color : #2b2b2b !important;
+    border-color     : #555 !important;
+}
+
+.modal-footer {
+    background-color : #2b2b2b !important;
+    border-color     : #555 !important;
+}
+
+
+/* ── Small Text and Muted Text ──────────────────────────────────────── */
+
+small,
+.small {
+    font-size : 13px !important;
+}
+
+.text-muted {
+    color     : #aaaaaa !important;
+    font-size : 14px !important;
+}
+
+
+/* ── General Page ───────────────────────────────────────────────────── */
+
+body {
+    background-color : #222 !important;
+    font-size        : 16px !important;
+}
+
+/* Container paragraphs */
+.container-fluid p {
+    font-size : 15px !important;
+}
+
+/* HR dividers */
+hr {
+    border-color : #444 !important;
+    opacity      : 1 !important;
+}
+
+
+/* ── Dashboard Summary Cards ────────────────────────────────────────── */
+
+/* Large number in summary cards */
+.card-body h3 {
+    font-size   : 32px !important;
+    font-weight : bold !important;
+}
+
+/* Label under the number */
+.card-body p.small {
+    font-size : 13px !important;
+}
+
+
+/* ── Spinner ────────────────────────────────────────────────────────── */
+
+.dash-spinner {
+    font-size : 16px !important;
+}
+
+
+/* ── Tooltip ────────────────────────────────────────────────────────── */
+
+.dash-table-tooltip {
+    font-size        : 18px !important;
+    background-color : #1e1e1e !important;
+    color            : #ffffff !important;
+    border           : 1px solid #4a9edd !important;
+    border-radius    : 4px !important;
+    padding          : 8px 12px !important;
+}
+
+/* ── Baseline Explorer ──────────────────────────────────────────── */
+
+.bex-table-card-hover:hover {
+    border-color     : #4a9edd !important;
+    background-color : #1a3a5c !important;
+    transition       : all 0.15s ease;
+}
+
+.bex-baseline-item-hover:hover {
+    background-color : #1a3a5c !important;
+    border-left      : 3px solid #4a9edd !important;
+    transition       : all 0.15s ease;
+}
+
+/* ── Lineage cards ──────────────────────────────────────────────────── */
+
+a:hover .lineage-card {
+    filter: brightness(1.2);
+}
+
+/* ── User Guide page — full height iframe ───────────────────────── */
+
+/* Remove container padding when iframe is present */
+.container-fluid:has(iframe) {
+    padding  : 0 !important;
+    margin   : 0 !important;
+    max-width: 100% !important;
+}
+
+/* ══ ONBOARDING WIZARD — Dark Theme Overrides ═══════════════════════════ */
+
+#ob-wizard-page {
+    background-color : #1A1B1E !important;
+    min-height       : 100vh   !important;
+}
+
+/* Wizard cards */
+#ob-wizard-page .card {
+    background-color : #25262B !important;
+    border           : 1px solid #373A40 !important;
+}
+
+#ob-wizard-page .card-header {
+    background-color : #2C2E33 !important;
+    border-bottom    : 1px solid #373A40 !important;
+}
+
+/* Wizard dropdowns match dark theme */
+.ob-dropdown .Select-control {
+    background-color : #2C2E33 !important;
+    border           : 1px solid #373A40 !important;
+    color            : #C1C2C5 !important;
+}
+
+/* Multi-select tag constraints (Step 2 column checks) */
+.ob-dropdown.ob-multi .Select-control {
+    max-height : 68px;
+    overflow-y : auto;
+}
+
+.ob-dropdown.ob-multi .Select-multi-value-wrapper {
+    max-width  : 100%;
+    flex-wrap  : wrap;
+}
+
+.ob-dropdown.ob-multi .Select-value {
+    max-width  : 95%;
+    font-size  : 11px !important;
+    padding    : 1px 4px !important;
+    margin     : 1px 2px !important;
+}
+
+.ob-dropdown .Select-value-label {
+    color            : #C1C2C5 !important;
+}
+
+.ob-dropdown .Select-placeholder {
+    color            : #909296 !important;
+}
+
+.ob-dropdown .Select-menu-outer {
+    background-color : #25262B !important;
+    border           : 1px solid #373A40 !important;
+    z-index          : 9999 !important;
+}
+
+.ob-dropdown .Select-option {
+    background-color : #25262B !important;
+    color            : #C1C2C5 !important;
+}
+
+.ob-dropdown .Select-option.is-focused {
+    background-color : #2C2E33 !important;
+    color            : #ffffff !important;
+}
+
+.ob-dropdown .Select-option.is-selected {
+    background-color : #1a3a5c !important;
+    color            : #ffffff !important;
+}
+
+.ob-dropdown .Select-input input {
+    color            : #C1C2C5 !important;
+}
+
+.ob-dropdown .Select-value {
+    background-color : #1a3a5c !important;
+    border-color     : #373A40 !important;
+    color            : #C1C2C5 !important;
+}
+
+.ob-dropdown .Select-value-icon {
+    border-right-color: #373A40 !important;
+    color             : #C1C2C5 !important;
+}
+
+/* React Select v5 wildcard overrides for wizards */
+#ob-wizard-page [class$="-control"],
+#ob-wizard-page [class*="-control"],
+#lo-wizard-page [class$="-control"],
+#lo-wizard-page [class*="-control"],
+#to-wizard-page [class$="-control"],
+#to-wizard-page [class*="-control"] {
+    background-color : #2C2E33 !important;
+    border-color     : #373A40 !important;
+    color            : #C1C2C5 !important;
+}
+
+#ob-wizard-page [class$="-singleValue"],
+#ob-wizard-page [class*="-singleValue"],
+#lo-wizard-page [class$="-singleValue"],
+#lo-wizard-page [class*="-singleValue"],
+#to-wizard-page [class$="-singleValue"],
+#to-wizard-page [class*="-singleValue"] {
+    color            : #C1C2C5 !important;
+}
+
+#ob-wizard-page [class$="-placeholder"],
+#ob-wizard-page [class*="-placeholder"],
+#lo-wizard-page [class$="-placeholder"],
+#lo-wizard-page [class*="-placeholder"],
+#to-wizard-page [class$="-placeholder"],
+#to-wizard-page [class*="-placeholder"] {
+    color            : #909296 !important;
+}
+
+#ob-wizard-page [class$="-Input"] input,
+#ob-wizard-page [class*="-Input"] input,
+#lo-wizard-page [class$="-Input"] input,
+#lo-wizard-page [class*="-Input"] input,
+#to-wizard-page [class$="-Input"] input,
+#to-wizard-page [class*="-Input"] input {
+    color            : #C1C2C5 !important;
+}
+
+#ob-wizard-page [class$="-menu"],
+#ob-wizard-page [class*="-menu"],
+#lo-wizard-page [class$="-menu"],
+#lo-wizard-page [class*="-menu"],
+#to-wizard-page [class$="-menu"],
+#to-wizard-page [class*="-menu"] {
+    background-color : #25262B !important;
+    border           : 1px solid #373A40 !important;
+    z-index          : 99999  !important;
+}
+
+#ob-wizard-page [class$="-option"],
+#ob-wizard-page [class*="-option"],
+#lo-wizard-page [class$="-option"],
+#lo-wizard-page [class*="-option"],
+#to-wizard-page [class$="-option"],
+#to-wizard-page [class*="-option"] {
+    background-color : #25262B !important;
+    color            : #C1C2C5 !important;
+}
+
+#ob-wizard-page [class$="-option"]:hover,
+#ob-wizard-page [class*="-option"]:active,
+#lo-wizard-page [class$="-option"]:hover,
+#lo-wizard-page [class*="-option"]:active,
+#to-wizard-page [class$="-option"]:hover,
+#to-wizard-page [class*="-option"]:active {
+    background-color : #2C2E33 !important;
+}
+
+#ob-wizard-page [class$="-multiValue"],
+#ob-wizard-page [class*="-multiValue"],
+#lo-wizard-page [class$="-multiValue"],
+#lo-wizard-page [class*="-multiValue"],
+#to-wizard-page [class$="-multiValue"],
+#to-wizard-page [class*="-multiValue"] {
+    background-color : #1a3a5c !important;
+    color            : #C1C2C5 !important;
+}
+
+#ob-wizard-page [class$="-multiValueLabel"],
+#ob-wizard-page [class*="-multiValueLabel"],
+#lo-wizard-page [class$="-multiValueLabel"],
+#lo-wizard-page [class*="-multiValueLabel"],
+#to-wizard-page [class$="-multiValueLabel"],
+#to-wizard-page [class*="-multiValueLabel"] {
+    color            : #C1C2C5 !important;
+}
+
+#ob-wizard-page [class$="-indicatorContainer"] svg,
+#ob-wizard-page [class*="-indicatorContainer"] svg,
+#lo-wizard-page [class$="-indicatorContainer"] svg,
+#lo-wizard-page [class*="-indicatorContainer"] svg,
+#to-wizard-page [class$="-indicatorContainer"] svg,
+#to-wizard-page [class*="-indicatorContainer"] svg {
+    fill             : #909296 !important;
+}
+
+#ob-wizard-page [class$="-indicatorSeparator"],
+#ob-wizard-page [class*="-indicatorSeparator"],
+#lo-wizard-page [class$="-indicatorSeparator"],
+#lo-wizard-page [class*="-indicatorSeparator"],
+#to-wizard-page [class$="-indicatorSeparator"],
+#to-wizard-page [class*="-indicatorSeparator"] {
+    background-color : #373A40 !important;
+}
+
+/* Wizard switch labels */
+#ob-wizard-page .form-check-label,
+#lo-wizard-page .form-check-label,
+#to-wizard-page .form-check-label {
+    color : #C1C2C5 !important;
+}
+
+/* Wizard DatePicker */
+#ob-wizard-page .DateInput_input {
+    background-color : #2C2E33 !important;
+    color            : #C1C2C5 !important;
+}
+
+#ob-wizard-page .SingleDatePickerInput {
+    background-color : #2C2E33 !important;
+    border           : 1px solid #373A40 !important;
+}
+
+/* Execution modal — dark theme */
+.ob-exec-modal-content {
+    background-color : #25262B !important;
+    border           : 1px solid #373A40 !important;
+    border-radius    : 12px !important;
+    color            : #C1C2C5 !important;
+}
+
+.ob-exec-modal-content .modal-header {
+    background-color : #2C2E33 !important;
+    border-bottom    : 1px solid #373A40 !important;
+    border-radius    : 12px 12px 0 0 !important;
+}
+
+.ob-exec-modal-content .modal-body {
+    background-color : #25262B !important;
+    color            : #C1C2C5 !important;
+}
+
+/* ══ CONTROL PLANE — workflow stepper pills ═════════════════════════════ */
+
+.ds-stage-pill {
+    background-color: #16171a;
+    border: 1px solid #373A40;
+    border-radius: 8px;
+    padding: 8px 14px;
+    min-width: 190px;
+    flex: 1 1 190px;
+}
+
+.ds-alert-item {
+    background-color: #16171a;
+    border-left: 3px solid #e03131;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+}
+
+/* ══ CONTROL PLANE — lineage tabs (dark theme) ══════════════════════════ */
+
+.ds-lineage-tabs .nav-tabs {
+    border-bottom: 1px solid #373A40;
+}
+
+.ds-lineage-tabs .nav-link {
+    background-color: transparent;
+    border: none;
+    color: #5C5F66;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 8px 16px;
+}
+
+.ds-lineage-tabs .nav-link:hover {
+    color: #C1C2C5;
+    border: none;
+}
+
+.ds-lineage-tabs .nav-link.active {
+    background-color: #1A1B1E;
+    color: #ffffff;
+    border: none;
+    border-bottom: 2px solid #00c851;
+}
+
+.ds-lineage-tabs .tab-content {
+    background-color: #1A1B1E;
+    border: 1px solid #373A40;
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    padding: 16px;
+}
+

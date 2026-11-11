@@ -1,0 +1,3400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DataSentinel — User Guide</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+
+        /* ── Reset and base ─────────────────────────────────────────── */
+
+        * {
+            margin      : 0;
+            padding     : 0;
+            box-sizing  : border-box;
+        }
+
+        body {
+            font-family      : -apple-system, BlinkMacSystemFont,
+                               "Segoe UI", Roboto, sans-serif;
+            background-color : #0d1b2a;
+            color            : #e0e6ed;
+            font-size        : 16px;
+            line-height      : 1.6;
+        }
+
+        /* ── Layout ─────────────────────────────────────────────────── */
+
+        .layout {
+            display : flex;
+            min-height: 100vh;
+        }
+
+        /* ── Sidebar ────────────────────────────────────────────────── */
+
+        .sidebar {
+            width            : 280px;
+            min-width        : 280px;
+            background-color : #0a1520;
+            border-right     : 1px solid #1e3a5f;
+            position         : sticky;
+            top              : 0;
+            height           : 100vh;
+            overflow-y       : auto;
+            padding          : 24px 0;
+            z-index          : 100;
+        }
+
+        .sidebar-brand {
+            padding         : 0 20px 20px;
+            border-bottom   : 1px solid #1e3a5f;
+            margin-bottom   : 16px;
+        }
+
+        .sidebar-brand h1 {
+            font-size   : 20px;
+            font-weight : 800;
+            color       : #4a9edd;
+            letter-spacing: 1px;
+        }
+
+        .sidebar-brand p {
+            font-size : 12px;
+            color     : #64748b;
+            margin-top: 4px;
+        }
+
+        .sidebar-section-label {
+            font-size      : 10px;
+            font-weight    : 700;
+            text-transform : uppercase;
+            letter-spacing : 1.5px;
+            color          : #475569;
+            padding        : 12px 20px 6px;
+        }
+
+        .sidebar a {
+            display         : block;
+            padding         : 7px 20px;
+            color           : #94a3b8;
+            text-decoration : none;
+            font-size       : 13px;
+            border-left     : 3px solid transparent;
+            transition      : all 0.15s ease;
+        }
+
+        .sidebar a:hover {
+            color            : #e0e6ed;
+            background-color : #0f2035;
+            border-left-color: #4a9edd;
+        }
+
+        .sidebar a.active {
+            color            : #4a9edd;
+            background-color : #0f2035;
+            border-left-color: #4a9edd;
+            font-weight      : 600;
+        }
+
+        .sidebar a.sub {
+            padding-left : 32px;
+            font-size    : 12px;
+        }
+
+        /* ── Main content ───────────────────────────────────────────── */
+
+        .main {
+            flex     : 1;
+            padding  : 48px 64px;
+            max-width: 960px;
+        }
+
+        /* ── Section ────────────────────────────────────────────────── */
+
+        .section {
+            margin-bottom : 80px;
+            scroll-margin-top: 24px;
+        }
+
+        /* ── Typography ─────────────────────────────────────────────── */
+
+        h1.page-title {
+            font-size    : 40px;
+            font-weight  : 800;
+            color        : #ffffff;
+            margin-bottom: 8px;
+            letter-spacing: -0.5px;
+        }
+
+        h1.page-title span {
+            color : #4a9edd;
+        }
+
+        .page-subtitle {
+            font-size    : 18px;
+            color        : #64748b;
+            margin-bottom: 40px;
+        }
+
+        h2.section-title {
+            font-size     : 28px;
+            font-weight   : 700;
+            color         : #ffffff;
+            margin-bottom : 8px;
+            padding-bottom: 12px;
+            border-bottom : 2px solid #1e3a5f;
+        }
+
+        h3.subsection-title {
+            font-size    : 19px;
+            font-weight  : 600;
+            color        : #cbd5e1;
+            margin-bottom: 12px;
+            margin-top   : 32px;
+        }
+
+        h4.subsubsection-title {
+            font-size    : 15px;
+            font-weight  : 600;
+            color        : #94a3b8;
+            margin-bottom: 8px;
+            margin-top   : 24px;
+        }
+
+        p {
+            color        : #cbd5e1;
+            margin-bottom: 16px;
+        }
+
+        /* ── Audience tags ──────────────────────────────────────────── */
+
+        .tag {
+            display         : inline-block;
+            font-size       : 11px;
+            font-weight     : 600;
+            padding         : 2px 8px;
+            border-radius   : 10px;
+            margin-right    : 6px;
+            text-transform  : uppercase;
+            letter-spacing  : 0.5px;
+        }
+
+        .tag-engineer {
+            background-color : #1e3a5f;
+            color            : #4a9edd;
+            border           : 1px solid #2a5080;
+        }
+
+        .tag-business {
+            background-color : #1a3a2a;
+            color            : #00c851;
+            border           : 1px solid #1e5030;
+        }
+
+        .tag-manager {
+            background-color : #3a2a00;
+            color            : #ffa500;
+            border           : 1px solid #5a4000;
+        }
+
+        /* ── Cards ──────────────────────────────────────────────────── */
+
+        .card {
+            background-color : #0f2035;
+            border           : 1px solid #1e3a5f;
+            border-radius    : 10px;
+            padding          : 24px;
+            margin-bottom    : 20px;
+        }
+
+        .card-title {
+            font-size    : 15px;
+            font-weight  : 700;
+            color        : #4a9edd;
+            margin-bottom: 10px;
+        }
+
+        /* ── Callout boxes ───────────────────────────────────────────── */
+
+        .callout {
+            border-radius : 8px;
+            padding       : 16px 20px;
+            margin-bottom : 20px;
+            border-left   : 4px solid;
+        }
+
+        .callout-info {
+            background-color : #0f2035;
+            border-color     : #4a9edd;
+        }
+
+        .callout-warning {
+            background-color : #2a1a00;
+            border-color     : #ffa500;
+        }
+
+        .callout-success {
+            background-color : #001a0a;
+            border-color     : #00c851;
+        }
+
+        .callout-danger {
+            background-color : #1a0000;
+            border-color     : #ff6b6b;
+        }
+
+        .callout strong {
+            color        : #ffffff;
+            display      : block;
+            margin-bottom: 4px;
+        }
+
+        .callout p {
+            margin-bottom: 0;
+            font-size    : 14px;
+        }
+
+        /* ── Tables ─────────────────────────────────────────────────── */
+
+        table {
+            width           : 100%;
+            border-collapse : collapse;
+            margin-bottom   : 20px;
+            font-size       : 14px;
+        }
+
+        th {
+            background-color : #0a1520;
+            color            : #94a3b8;
+            font-weight      : 600;
+            font-size        : 11px;
+            text-transform   : uppercase;
+            letter-spacing   : 0.5px;
+            padding          : 10px 14px;
+            text-align       : left;
+            border-bottom    : 1px solid #1e3a5f;
+        }
+
+        td {
+            padding          : 10px 14px;
+            border-bottom    : 1px solid #0f2035;
+            color            : #cbd5e1;
+            vertical-align   : top;
+        }
+
+        tr:hover td {
+            background-color : #0a1520;
+        }
+
+        /* ── Code ───────────────────────────────────────────────────── */
+
+        code {
+            background-color : #0a1520;
+            color            : #4a9edd;
+            padding          : 2px 6px;
+            border-radius    : 4px;
+            font-family      : "SF Mono", "Fira Code", monospace;
+            font-size        : 13px;
+        }
+
+        pre {
+            background-color : #0a1520;
+            border           : 1px solid #1e3a5f;
+            border-radius    : 8px;
+            padding          : 20px;
+            overflow-x       : auto;
+            margin-bottom    : 20px;
+        }
+
+        pre code {
+            background-color : transparent;
+            padding          : 0;
+            font-size        : 13px;
+            color            : #e0e6ed;
+        }
+
+        /* ── Lists ──────────────────────────────────────────────────── */
+
+        ul, ol {
+            padding-left : 24px;
+            margin-bottom: 16px;
+            color        : #cbd5e1;
+        }
+
+        li {
+            margin-bottom: 6px;
+            font-size    : 15px;
+        }
+
+        /* ── Step list ──────────────────────────────────────────────── */
+
+        .step-list {
+            list-style   : none;
+            padding-left : 0;
+        }
+
+        .step-list li {
+            display       : flex;
+            align-items   : flex-start;
+            margin-bottom : 16px;
+            gap           : 14px;
+        }
+
+        .step-number {
+            background-color : #1e3a5f;
+            color            : #4a9edd;
+            font-weight      : 800;
+            font-size        : 13px;
+            min-width        : 28px;
+            height           : 28px;
+            border-radius    : 50%;
+            display          : flex;
+            align-items      : center;
+            justify-content  : center;
+            flex-shrink      : 0;
+            margin-top       : 2px;
+        }
+
+        .step-content strong {
+            color        : #ffffff;
+            display      : block;
+            margin-bottom: 2px;
+            font-size    : 15px;
+        }
+
+        .step-content p {
+            font-size    : 14px;
+            margin-bottom: 0;
+            color        : #94a3b8;
+        }
+
+        /* ── Status badges ──────────────────────────────────────────── */
+
+        .badge {
+            display         : inline-block;
+            padding         : 3px 10px;
+            border-radius   : 12px;
+            font-size       : 12px;
+            font-weight     : 700;
+            text-transform  : uppercase;
+            letter-spacing  : 0.5px;
+        }
+
+        .badge-critical {
+            background-color : #3d0000;
+            color            : #ff6b6b;
+            border           : 1px solid #ff6b6b;
+        }
+
+        .badge-warning {
+            background-color : #3d2000;
+            color            : #ffa500;
+            border           : 1px solid #ffa500;
+        }
+
+        .badge-pass {
+            background-color : #002800;
+            color            : #00c851;
+            border           : 1px solid #00c851;
+        }
+
+        .badge-unknown {
+            background-color : #1a1a1a;
+            color            : #888888;
+            border           : 1px solid #555;
+        }
+
+        /* ── Agent cards ─────────────────────────────────────────────── */
+
+        .agent-grid {
+            display               : grid;
+            grid-template-columns : 1fr 1fr;
+            gap                   : 16px;
+            margin-bottom         : 24px;
+        }
+
+        .agent-card {
+            border-radius    : 10px;
+            padding          : 20px;
+            border-left      : 4px solid;
+        }
+
+        .agent-card h4 {
+            font-size    : 15px;
+            font-weight  : 700;
+            color        : #ffffff;
+            margin-bottom: 6px;
+        }
+
+        .agent-card p {
+            font-size    : 13px;
+            color        : #94a3b8;
+            margin-bottom: 0;
+        }
+
+        .agent-1 { background-color:#0f2035; border-color:#375a7f; }
+        .agent-2 { background-color:#0a2015; border-color:#2d6a4f; }
+        .agent-3 { background-color:#1a0f2e; border-color:#6b3a7d; }
+        .agent-4 { background-color:#2a1a0a; border-color:#7d4a1a; }
+
+        /* ── Check type table ───────────────────────────────────────── */
+
+        .check-badge {
+            display         : inline-block;
+            background-color: #0a1520;
+            color           : #4a9edd;
+            border          : 1px solid #1e3a5f;
+            border-radius   : 4px;
+            padding         : 2px 8px;
+            font-family     : monospace;
+            font-size       : 12px;
+        }
+
+        /* ── Mermaid diagrams ────────────────────────────────────────── */
+
+        .mermaid-container {
+            background-color : #0a1520;
+            border           : 1px solid #1e3a5f;
+            border-radius    : 10px;
+            padding          : 24px;
+            margin-bottom    : 24px;
+            overflow-x       : auto;
+        }
+
+        .mermaid {
+            display    : flex;
+            justify-content: center;
+        }
+
+        /* ── Divider ─────────────────────────────────────────────────── */
+
+        .divider {
+            border      : none;
+            border-top  : 1px solid #1e3a5f;
+            margin      : 48px 0;
+        }
+
+        /* ── Quick start highlight ───────────────────────────────────── */
+
+        .quickstart-box {
+            background-color : #0a1520;
+            border           : 2px solid #4a9edd;
+            border-radius    : 12px;
+            padding          : 28px 32px;
+            margin-bottom    : 40px;
+        }
+
+        .quickstart-box h3 {
+            color        : #4a9edd;
+            font-size    : 18px;
+            font-weight  : 700;
+            margin-bottom: 16px;
+        }
+
+        /* ── Troubleshoot ────────────────────────────────────────────── */
+
+        .trouble-item {
+            background-color : #0f2035;
+            border           : 1px solid #1e3a5f;
+            border-radius    : 8px;
+            padding          : 16px 20px;
+            margin-bottom    : 12px;
+        }
+
+        .trouble-item summary {
+            cursor      : pointer;
+            color       : #cbd5e1;
+            font-weight : 600;
+            font-size   : 15px;
+            list-style  : none;
+        }
+
+        .trouble-item summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .trouble-item summary::before {
+            content      : "▶ ";
+            color        : #4a9edd;
+            font-size    : 12px;
+        }
+
+        details[open] summary::before {
+            content : "▼ ";
+        }
+
+        .trouble-item p {
+            margin-top   : 12px;
+            margin-bottom: 0;
+            font-size    : 14px;
+            color        : #94a3b8;
+        }
+
+        /* ── Page reference grid ─────────────────────────────────────── */
+
+        .page-grid {
+            display               : grid;
+            grid-template-columns : 1fr 1fr;
+            gap                   : 12px;
+            margin-bottom         : 20px;
+        }
+
+        .page-item {
+            background-color : #0f2035;
+            border           : 1px solid #1e3a5f;
+            border-radius    : 8px;
+            padding          : 14px 16px;
+        }
+
+        .page-item .route {
+            font-family  : monospace;
+            font-size    : 13px;
+            color        : #4a9edd;
+            display      : block;
+            margin-bottom: 4px;
+        }
+
+        .page-item .purpose {
+            font-size    : 13px;
+            color        : #64748b;
+        }
+
+        /* ── Scrollbar ───────────────────────────────────────────────── */
+
+        ::-webkit-scrollbar {
+            width : 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0a1520;
+        }
+        ::-webkit-scrollbar-thumb {
+            background   : #1e3a5f;
+            border-radius: 3px;
+        }
+
+        /* ── Responsive ──────────────────────────────────────────────── */
+
+        @media (max-width: 900px) {
+            .sidebar { display: none; }
+            .main    { padding: 24px; max-width: 100%; }
+            .agent-grid { grid-template-columns: 1fr; }
+            .page-grid  { grid-template-columns: 1fr; }
+        }
+
+    </style>
+</head>
+<body>
+
+<div class="layout">
+
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <!-- SIDEBAR                                                        -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
+
+    <nav class="sidebar">
+
+        <div class="sidebar-brand">
+            <h1>DataSentinel</h1>
+            <p>User Guide</p>
+        </div>
+
+        <div class="sidebar-section-label">Overview</div>
+        <a href="#introduction">Introduction</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#quick-start">Quick Start</a>
+        <a href="#audience">Who Uses What</a>
+
+        <div class="sidebar-section-label">Getting Started</div>
+        <a href="#register-table">Register a Table</a>
+        <a href="#enroll-columns">Enrol Columns</a>
+        <a href="#configure-validations">Configure Validations</a>
+        <a href="#compute-baselines">Compute Baselines</a>
+        <a href="#run-agent">Run the Agent</a>
+
+        <div class="sidebar-section-label">The Four Agents</div>
+        <a href="#agent1">Agent 1 — Raw Ingestion</a>
+        <a class="sub" href="#agent1-checks">Check Types</a>
+        <a class="sub" href="#agent1-results">Reading Results</a>
+        <a class="sub" href="#agent1-ai">AI Summary</a>
+        <a href="#agent2">Agent 2 — Reconciliation</a>
+        <a class="sub" href="#agent2-survival">Survival Rates</a>
+        <a class="sub" href="#agent2-config">Configuration</a>
+        <a class="sub" href="#agent2-results">Reading Results</a>
+        <a href="#agent3">Agent 3 — SQL Governance</a>
+        <a class="sub" href="#agent3-register">Register Transformation</a>
+        <a class="sub" href="#agent3-checks">What It Checks</a>
+        <a class="sub" href="#agent3-results">Reading Results</a>
+        <a href="#agent4">Agent 4 — KPI Validation</a>
+        <a class="sub" href="#agent4-register">Register a KPI</a>
+        <a class="sub" href="#agent4-checks">Check Types</a>
+        <a class="sub" href="#agent4-baselines">Baselines</a>
+        <a class="sub" href="#agent4-lineage">Data Lineage</a>
+
+        <div class="sidebar-section-label">AI & Insights</div>
+        <a href="#ai-insights">AI Insights Page</a>
+        <a href="#ai-narrative">Reading the Narrative</a>
+
+        <div class="sidebar-section-label">Business Pages</div>
+        <a href="#status-page">Platform Status</a>
+        <a href="#quality-score">Quality Score</a>
+        <a href="#pipeline-health">Pipeline Health</a>
+        <a href="#nlq">Natural Language Query</a>
+
+        <div class="sidebar-section-label">Reference</div>
+        <a href="#all-pages">All Pages</a>
+        <a href="#check-types-ref">Check Types Reference</a>
+        <a href="#data-model">Data Model</a>
+        <a href="#troubleshooting">Troubleshooting</a>
+
+    </nav>
+
+    <!-- ══════════════════════════════════════════════════════════════ -->
+    <!-- MAIN CONTENT                                                   -->
+    <!-- ══════════════════════════════════════════════════════════════ -->
+
+    <main class="main">
+
+        <!-- ── Hero ───────────────────────────────────────────────── -->
+
+        <h1 class="page-title">
+            Data<span>Sentinel</span>
+        </h1>
+        <p class="page-subtitle">
+            Automated data quality monitoring for your entire data platform.
+            Four agents. One quality score. Plain-English explanations.
+        </p>
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- INTRODUCTION                                               -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="introduction">
+
+            <h2 class="section-title">Introduction</h2>
+
+            <p>
+                DataSentinel is a data quality platform that automatically
+                validates data at every layer of your data pipeline — from
+                raw ingestion through Silver transformation to Gold KPIs.
+                It runs nightly, catches problems before they reach business
+                reports, and explains every issue in plain English.
+            </p>
+
+            <div class="callout callout-info">
+                <strong>The core principle</strong>
+                <p>
+                    Deterministic checks find problems. AI explains them.
+                    Never the other way around. Every alert and every summary
+                    in DataSentinel is based on hard numbers — not AI
+                    guesswork.
+                </p>
+            </div>
+
+            <h3 class="subsection-title" id="architecture">
+                Architecture
+            </h3>
+
+            <p>
+                DataSentinel monitors your data through four specialised
+                agents, each responsible for one layer of the platform.
+            </p>
+
+            <div class="agent-grid">
+                <div class="agent-card agent-1">
+                    <h4>🔍 Agent 1 — Raw Ingestion</h4>
+                    <p>
+                        Validates raw data the moment it arrives. Checks
+                        for volume anomalies, null spikes, schema changes,
+                        categorical domain violations, and more.
+                    </p>
+                </div>
+                <div class="agent-card agent-2">
+                    <h4>🔄 Agent 2 — Reconciliation</h4>
+                    <p>
+                        Compares record counts and financial aggregates
+                        across Raw, Silver, and Gold layers. Detects
+                        silent record drops during transformation.
+                    </p>
+                </div>
+                <div class="agent-card agent-3">
+                    <h4>🧪 Agent 3 — SQL Governance</h4>
+                    <p>
+                        Reviews Silver transformation SQL and notebooks
+                        for risky patterns — join fan-outs, missing null
+                        filters, and row count ratio anomalies.
+                    </p>
+                </div>
+                <div class="agent-card agent-4">
+                    <h4>📊 Agent 4 — KPI Validation</h4>
+                    <p>
+                        Validates Gold layer KPIs for formula correctness,
+                        cross-KPI consistency, anomaly detection, and
+                        range bound compliance.
+                    </p>
+                </div>
+            </div>
+
+            <div class="mermaid-container">
+                <div class="mermaid">
+flowchart TD
+    SRC1["Transaction System\nFILE / BATCH / DAILY"]
+    SRC2["Inventory System\nCDC / AUTOLOADER / REALTIME"]
+
+    RAW1["uc1_raw_store_transactions"]
+    RAW2["uc1_raw_inventory_movements"]
+
+    A1["🔍 Agent 1\nRaw Validation\n10 check types"]
+
+    SILV1["uc2_silver_store_transactions"]
+    SILV2["uc2_silver_inventory_movements"]
+
+    A2["🔄 Agent 2\nReconciliation\nRaw → Silver → Gold"]
+    A3["🧪 Agent 3\nSQL Governance\nCode review"]
+
+    GOLD1["uc2_gold_daily_store_metrics"]
+    GOLD2["uc2_gold_daily_inventory_summary"]
+
+    A4["📊 Agent 4\nKPI Validation\nFormula + Anomaly"]
+
+    AI["🤖 AI Insights\nCross-agent narrative\nfor any business date"]
+
+    TEAMS["📣 Teams Alerts"]
+    UI["🖥 Admin UI\n16 pages"]
+    STATUS["🌐 Status Page"]
+
+    SRC1 --> RAW1
+    SRC2 --> RAW2
+    RAW1 --> A1
+    RAW2 --> A1
+    A1 -->|"validated"| SILV1
+    A1 -->|"validated"| SILV2
+    SILV1 --> A2
+    SILV2 --> A2
+    SILV1 --> A3
+    SILV2 --> A3
+    A2 -->|"reconciled"| GOLD1
+    A2 -->|"reconciled"| GOLD2
+    GOLD1 --> A4
+    GOLD2 --> A4
+    A1 --> AI
+    A2 --> AI
+    A3 --> AI
+    A4 --> AI
+    A1 --> TEAMS
+    A2 --> TEAMS
+    A3 --> TEAMS
+    A4 --> TEAMS
+    AI --> UI
+    AI --> STATUS
+
+    style A1 fill:#1a3a5c,stroke:#4a9edd,color:#fff
+    style A2 fill:#0d3020,stroke:#2d6a4f,color:#fff
+    style A3 fill:#2a1040,stroke:#6b3a7d,color:#fff
+    style A4 fill:#3a1800,stroke:#7d4a1a,color:#fff
+    style AI fill:#1a1a3a,stroke:#87ceeb,color:#fff
+    style TEAMS fill:#1a1a1a,stroke:#555,color:#aaa
+    style UI fill:#1a1a1a,stroke:#555,color:#aaa
+    style STATUS fill:#1a1a1a,stroke:#555,color:#aaa
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- QUICK START                                                -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="quick-start">
+
+            <h2 class="section-title">Quick Start</h2>
+
+            <div class="quickstart-box">
+                <h3>⚡ Get your first table monitored in 5 steps</h3>
+                <ol class="step-list">
+                    <li>
+                        <span class="step-number">1</span>
+                        <div class="step-content">
+                            <strong>
+                                Register the table
+                                <a href="/table-registry"
+                                   style="color:#4a9edd;font-size:12px;
+                                          margin-left:8px;font-weight:400">
+                                    → Table Registry
+                                </a>
+                            </strong>
+                            <p>
+                                Select catalog → schema → table.
+                                Set source type, ingestion pattern,
+                                and expected arrival window.
+                            </p>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="step-number">2</span>
+                        <div class="step-content">
+                            <strong>
+                                Enrol columns
+                                <a href="/column-registry"
+                                   style="color:#4a9edd;font-size:12px;
+                                          margin-left:8px;font-weight:400">
+                                    → Column Registry
+                                </a>
+                            </strong>
+                            <p>
+                                Select which columns should be monitored.
+                                Columns are fetched live from Unity Catalog.
+                            </p>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="step-number">3</span>
+                        <div class="step-content">
+                            <strong>
+                                Configure validations
+                                <a href="/validations"
+                                   style="color:#4a9edd;font-size:12px;
+                                          margin-left:8px;font-weight:400">
+                                    → Validations
+                                </a>
+                            </strong>
+                            <p>
+                                Assign check types and set warning and
+                                critical thresholds for each column and
+                                each table-level check.
+                            </p>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="step-number">4</span>
+                        <div class="step-content">
+                            <strong>
+                                Compute baselines
+                                <a href="/baselines"
+                                   style="color:#4a9edd;font-size:12px;
+                                          margin-left:8px;font-weight:400">
+                                    → Baselines
+                                </a>
+                            </strong>
+                            <p>
+                                Run the baseline computation notebook
+                                to establish what "normal" looks like
+                                for each check type.
+                            </p>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="step-number">5</span>
+                        <div class="step-content">
+                            <strong>Run the validation agent</strong>
+                            <p>
+                                Trigger the Agent 1 Databricks Workflow
+                                manually or wait for the scheduled run.
+                                Results appear in Validation Results.
+                            </p>
+                        </div>
+                    </li>
+                </ol>
+            </div>
+
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- WHO USES WHAT                                             -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="audience">
+
+            <h2 class="section-title">Who Uses What</h2>
+
+            <p>
+                DataSentinel is designed for three types of users.
+                Each section of this guide is tagged to show who it
+                is most relevant for.
+            </p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>Tag</th>
+                        <th>Primary Pages</th>
+                        <th>Key Question Answered</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Data Engineer</td>
+                        <td>
+                            <span class="tag tag-engineer">
+                                🔧 Engineer
+                            </span>
+                        </td>
+                        <td>
+                            All admin pages, Validation Results,
+                            Reconciliation, SQL Review, KPI Validation
+                        </td>
+                        <td>What exactly failed and why?</td>
+                    </tr>
+                    <tr>
+                        <td>Data Steward / Analyst</td>
+                        <td>
+                            <span class="tag tag-business">
+                                📊 Business
+                            </span>
+                        </td>
+                        <td>
+                            AI Insights, KPI Baselines,
+                            Quality Score, Pipeline Health
+                        </td>
+                        <td>Is today's data trustworthy?</td>
+                    </tr>
+                    <tr>
+                        <td>Manager / Leadership</td>
+                        <td>
+                            <span class="tag tag-manager">
+                                📈 Manager
+                            </span>
+                        </td>
+                        <td>
+                            Platform Status, Quality Score,
+                            Dashboard summary cards
+                        </td>
+                        <td>
+                            Is our data platform getting
+                            more reliable over time?
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+        </div>
+
+        <hr class="divider">
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- GETTING STARTED — DETAILED                                 -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="register-table">
+
+            <h2 class="section-title">
+                Register a Table
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:12px">
+                    🔧 Engineer
+                </span>
+            </h2>
+
+            <p>
+                Before any validation can run, a table must be registered
+                in the Table Registry. This tells DataSentinel that the
+                table exists, how data arrives, and what time window
+                to expect it in.
+            </p>
+
+            <h3 class="subsection-title" id="enroll-columns">
+                Step-by-Step: Table Registry
+            </h3>
+
+            <ol>
+                <li>
+                    Navigate to
+                    <strong>Agent 1 → Table Registry</strong>
+                    in the navbar.
+                </li>
+                <li>
+                    In the Register New Table panel, select
+                    <strong>Catalog</strong> (currently
+                    <code>learning_dev</code>), then
+                    <strong>Schema</strong>, then
+                    <strong>Table</strong>. Tables load live from
+                    Unity Catalog.
+                </li>
+                <li>
+                    Set <strong>Source Type</strong>:
+                    <code>FILE</code>, <code>CDC</code>,
+                    <code>API</code>, or <code>DATABASE</code>.
+                </li>
+                <li>
+                    Set <strong>Ingestion Pattern</strong>:
+                    <code>BATCH</code>, <code>AUTOLOADER</code>,
+                    <code>COPY_INTO</code>, or
+                    <code>STREAMING</code>.
+                </li>
+                <li>
+                    Set <strong>Ingestion Frequency</strong>:
+                    <code>DAILY</code>, <code>HOURLY</code>,
+                    <code>NEAR_REALTIME</code>, or
+                    <code>WEEKLY</code>.
+                </li>
+                <li>
+                    Select the <strong>Partition Column</strong>
+                    and <strong>Business Date Column</strong>
+                    from the dropdown. These are used to filter
+                    data by business date during validation.
+                </li>
+                <li>
+                    Set <strong>Expected Arrival Window</strong>
+                    in minutes. This is how long after midnight
+                    the data should arrive.
+                    Example: 120 for a batch table expected by 02:00.
+                </li>
+                <li>
+                    Enter your name in <strong>Registered By</strong>
+                    and a brief <strong>Reason</strong>, then click
+                    <strong>Register Table</strong>.
+                </li>
+            </ol>
+
+            <div class="callout callout-info">
+                <strong>Only registered tables are validated</strong>
+                <p>
+                    DataSentinel only monitors tables that are explicitly
+                    registered and have <code>is_active = true</code>.
+                    Registering a table does not start validation —
+                    you must also enrol columns and configure validations.
+                </p>
+            </div>
+
+        </div>
+
+        <div class="section" id="configure-validations">
+
+            <h2 class="section-title">
+                Enrol Columns and Configure Validations
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:12px">
+                    🔧 Engineer
+                </span>
+            </h2>
+
+            <h3 class="subsection-title">Column Registry</h3>
+
+            <p>
+                Navigate to <strong>Agent 1 → Column Registry</strong>.
+                Select the registered table from the dropdown and click
+                <strong>Load Columns</strong>. The Unity Catalog schema
+                is fetched live. Select the columns you want to monitor
+                and click <strong>Enrol Selected Columns</strong>.
+            </p>
+
+            <div class="callout callout-warning">
+                <strong>Enrol only columns you intend to monitor</strong>
+                <p>
+                    Enrolling many columns increases validation runtime.
+                    Focus on business-critical columns — primary keys,
+                    financial amounts, status fields, and date columns.
+                </p>
+            </div>
+
+            <h3 class="subsection-title">Validations</h3>
+
+            <p>
+                Navigate to <strong>Agent 1 → Validations</strong>.
+                There are two tabs:
+            </p>
+
+            <ul>
+                <li>
+                    <strong>Table-Level Validations</strong> —
+                    checks that apply to the whole table such as
+                    volume anomaly detection and schema conformance.
+                </li>
+                <li>
+                    <strong>Column-Level Validations</strong> —
+                    checks that apply to a specific column such as
+                    null spike detection and numeric range validation.
+                </li>
+            </ul>
+
+            <p>
+                For each validation, set:
+            </p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>What it controls</th>
+                        <th>Example</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Warning Threshold</strong></td>
+                        <td>
+                            Value above which the check triggers
+                            a WARNING alert
+                        </td>
+                        <td>5 (for null rate %)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Critical Threshold</strong></td>
+                        <td>
+                            Value above which the check triggers
+                            a CRITICAL alert
+                        </td>
+                        <td>20 (for null rate %)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Threshold Unit</strong></td>
+                        <td>
+                            How the threshold is interpreted
+                        </td>
+                        <td>
+                            PERCENTAGE, COUNT,
+                            STDDEV_MULTIPLIER, MINUTES
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Custom Parameters</strong></td>
+                        <td>
+                            Check-specific configuration in JSON
+                        </td>
+                        <td>
+                            <code>
+                                {"valid_values": ["SALE","RETURN"]}
+                            </code>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+        </div>
+
+        <div class="section" id="compute-baselines">
+
+            <h2 class="section-title">
+                Compute Baselines
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:12px">
+                    🔧 Engineer
+                </span>
+            </h2>
+
+            <p>
+                Baselines tell DataSentinel what "normal" looks like
+                for each check. Without a baseline, anomaly detection
+                and volume checks cannot fire.
+            </p>
+
+            <h3 class="subsection-title">How baselines are computed</h3>
+
+            <p>
+                The baseline computation notebook reads the last 30 days
+                of clean historical data and computes statistical
+                distributions for each configured check type:
+            </p>
+
+            <ul>
+                <li>
+                    <strong>Mean</strong> — the average value across
+                    all baseline dates
+                </li>
+                <li>
+                    <strong>Standard deviation</strong> — how much
+                    daily values typically vary
+                </li>
+                <li>
+                    <strong>Percentiles (P25, P50, P75, P95)</strong>
+                    — the shape of the distribution
+                </li>
+            </ul>
+
+            <div class="callout callout-warning">
+                <strong>
+                    Exclude anomaly dates from the baseline window
+                </strong>
+                <p>
+                    If your baseline window includes dates where known
+                    issues occurred, the baseline mean will be distorted.
+                    Use the <code>EXCLUDE_DATES</code> list in the
+                    baseline notebook to exclude specific dates.
+                </p>
+            </div>
+
+            <h3 class="subsection-title">Baseline Explorer</h3>
+
+            <p>
+                Navigate to <strong>Agent 1 → Baseline Explorer</strong>
+                to visualise any baseline. Select an agent, a table,
+                and a specific check to see a time series chart of
+                daily values alongside the baseline distribution and
+                threshold bands.
+            </p>
+
+        </div>
+
+        <div class="section" id="run-agent">
+
+            <h2 class="section-title">
+                Running the Agent
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:12px">
+                    🔧 Engineer
+                </span>
+            </h2>
+
+            <p>
+                Each agent runs as a Databricks Workflow with three
+                or four tasks:
+            </p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Task</th>
+                        <th>What it does</th>
+                        <th>Output</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>
+                            <code>run_validation_agent</code>
+                        </td>
+                        <td>
+                            Runs all deterministic checks and writes
+                            results to the metadata tables
+                        </td>
+                        <td>
+                            <code>uc1_validation_run</code>,
+                            <code>uc1_validation_results</code>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>run_ai_summarization</code>
+                        </td>
+                        <td>
+                            Calls the AI model to explain failed checks
+                            in plain English
+                        </td>
+                        <td>
+                            Updates <code>ai_summary</code> fields
+                            in results tables
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>run_alert_dispatcher</code>
+                        </td>
+                        <td>
+                            Sends Teams MessageCard alerts for any
+                            CRITICAL or WARNING run
+                        </td>
+                        <td>
+                            Teams channel: platform-support
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="callout callout-info">
+                <strong>AI enrichment threshold</strong>
+                <p>
+                    The AI summarization task only fires when at least
+                    2 checks failed AND at least 1 is CRITICAL.
+                    This prevents unnecessary AI calls on minor
+                    single-check failures.
+                </p>
+            </div>
+
+        </div>
+
+        <hr class="divider">
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- AGENT 1                                                    -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="agent1">
+
+            <h2 class="section-title">
+                Agent 1 — Raw Ingestion Validation
+            </h2>
+
+            <p>
+                Agent 1 watches raw data the moment it arrives and
+                validates it against 10 check types. It is the first
+                line of defence — catching problems at the source
+                before they cascade downstream.
+            </p>
+
+            <h3 class="subsection-title" id="agent1-checks">
+                Check Types
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:8px">
+                    🔧 Engineer
+                </span>
+            </h3>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Check</th>
+                        <th>Level</th>
+                        <th>What it detects</th>
+                        <th>Threshold unit</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                VOLUME_ANOMALY
+                            </span>
+                        </td>
+                        <td>Table</td>
+                        <td>
+                            Daily row count deviates significantly
+                            from baseline mean. Catches pipeline
+                            failures, truncated files, and
+                            unexpected spikes.
+                        </td>
+                        <td>PERCENTAGE</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                SCHEMA_CONFORMANCE
+                            </span>
+                        </td>
+                        <td>Table</td>
+                        <td>
+                            Column count changed from baseline.
+                            Catches schema drift — columns added
+                            or dropped without notice.
+                        </td>
+                        <td>COUNT</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                MALFORMED_RECORDS
+                            </span>
+                        </td>
+                        <td>Table</td>
+                        <td>
+                            Non-null <code>_rescued_data</code>
+                            rate exceeds threshold. Indicates
+                            Autoloader could not parse records
+                            due to schema mismatch.
+                        </td>
+                        <td>PERCENTAGE</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                NULL_SPIKE
+                            </span>
+                        </td>
+                        <td>Column</td>
+                        <td>
+                            Null rate in a column exceeds baseline
+                            or threshold. Catches upstream systems
+                            stopping to populate mandatory fields.
+                        </td>
+                        <td>PERCENTAGE</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                NUMERIC_RANGE
+                            </span>
+                        </td>
+                        <td>Column</td>
+                        <td>
+                            Values fall outside configured min/max
+                            bounds. Catches impossible values like
+                            negative stock quantities.
+                        </td>
+                        <td>PERCENTAGE</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                CATEGORICAL_DOMAIN
+                            </span>
+                        </td>
+                        <td>Column</td>
+                        <td>
+                            Values not in the configured valid set.
+                            Catches new payment types or transaction
+                            types introduced without notification.
+                        </td>
+                        <td>PERCENTAGE</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                CARDINALITY_DRIFT
+                            </span>
+                        </td>
+                        <td>Column</td>
+                        <td>
+                            Distinct value count deviates from
+                            baseline. Catches new product SKUs
+                            or store codes appearing unexpectedly.
+                        </td>
+                        <td>PERCENTAGE</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                CROSS_COLUMN_CONSISTENCY
+                            </span>
+                        </td>
+                        <td>Column</td>
+                        <td>
+                            A business rule across columns is
+                            violated. Example:
+                            <code>gross - discount + tax = net</code>.
+                            Catches calculation errors in source
+                            systems.
+                        </td>
+                        <td>PERCENTAGE</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                DUPLICATE_INGESTION
+                            </span>
+                        </td>
+                        <td>Table</td>
+                        <td>
+                            Business key appears more than once.
+                            Catches double-ingestion from source
+                            systems or retried pipeline runs.
+                        </td>
+                        <td>PERCENTAGE</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                PARTITION_FRESHNESS
+                            </span>
+                        </td>
+                        <td>Table</td>
+                        <td>
+                            Data has not arrived within the
+                            expected arrival window. Catches
+                            delayed or missing daily loads.
+                        </td>
+                        <td>MINUTES</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 class="subsection-title" id="agent1-results">
+                Reading Validation Results
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:8px">
+                    🔧 Engineer
+                </span>
+                <span class="tag tag-business"
+                      style="font-size:13px;margin-left:4px">
+                    📊 Business
+                </span>
+            </h3>
+
+            <p>
+                Navigate to
+                <strong>Agent 1 → Validation Results</strong>.
+                The top table shows one row per table per business date.
+                Click a row to see individual check results below.
+            </p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Status</th>
+                        <th>Meaning</th>
+                        <th>Action required</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>
+                            <span class="badge badge-critical">
+                                🔴 CRITICAL
+                            </span>
+                        </td>
+                        <td>
+                            One or more checks exceeded the
+                            critical threshold. The data has a
+                            significant quality problem.
+                        </td>
+                        <td>
+                            Investigate immediately. Do not use
+                            this data for reports until resolved.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="badge badge-warning">
+                                🟡 WARNING
+                            </span>
+                        </td>
+                        <td>
+                            One or more checks exceeded the
+                            warning threshold but not critical.
+                            The data may have a problem.
+                        </td>
+                        <td>
+                            Monitor. Investigate if the pattern
+                            persists across multiple days.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="badge badge-pass">
+                                🟢 PASS
+                            </span>
+                        </td>
+                        <td>
+                            All checks passed. Data quality is
+                            within normal ranges.
+                        </td>
+                        <td>No action required.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <p>
+                The <strong>Observed</strong> column shows the value
+                measured today. The <strong>Baseline</strong> column
+                shows what was expected based on historical data.
+                The <strong>Deviation %</strong> column shows how far
+                observed was from baseline.
+            </p>
+
+            <h3 class="subsection-title" id="agent1-ai">
+                AI Summary
+            </h3>
+
+            <p>
+                When the AI confidence threshold is met (2+ failures
+                with at least 1 CRITICAL), the AI tab shows an
+                explanation of what happened and what to do.
+            </p>
+
+            <div class="callout callout-success">
+                <strong>How to read the AI summary</strong>
+                <p>
+                    The <strong>AI Summary</strong> explains the
+                    observed failure in plain English, naming specific
+                    columns and deviation percentages.
+                    The <strong>Recommended Action</strong> tells the
+                    data engineering team what to check first.
+                    The <strong>Failure Category</strong> classifies
+                    the type of problem: SCHEMA_ISSUE, VOLUME_ISSUE,
+                    QUALITY_ISSUE, PIPELINE_ISSUE, or COMBINED_ISSUE.
+                    The <strong>Confidence Score</strong> (0.0 to 1.0)
+                    indicates how certain the AI is about its
+                    classification.
+                </p>
+            </div>
+
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- AGENT 2                                                    -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="agent2">
+
+            <h2 class="section-title">
+                Agent 2 — Cross-Layer Reconciliation
+            </h2>
+
+            <p>
+                Agent 2 watches the journey of records from Raw through
+                Silver to Gold. It asks: did all the records that arrived
+                in Raw make it to Silver? And did the Silver aggregates
+                match Gold exactly?
+            </p>
+
+            <h3 class="subsection-title" id="agent2-survival">
+                Understanding Survival Rates
+                <span class="tag tag-business"
+                      style="font-size:13px;margin-left:8px">
+                    📊 Business
+                </span>
+            </h3>
+
+            <p>
+                The Silver transformation deliberately drops some records
+                — VOIDs, duplicates, malformed records. The
+                <strong>expected survival rate</strong> is configured in
+                the Layer Registry. For example, 92% means Silver is
+                expected to keep 92% of raw records after filtering.
+            </p>
+
+            <div class="callout callout-danger">
+                <strong>When Agent 2 PASS does not mean everything is fine</strong>
+                <p>
+                    On 2026-07-20, Agent 2 returned PASS because 77 of
+                    80 raw transaction records survived to Silver — a 96%
+                    survival rate above the 92% threshold. But 80 records
+                    is only 12% of the expected 650. Agent 2 cannot
+                    detect a business impact from a low volume — only
+                    Agent 1 and Agent 4 can. Always read all four agents
+                    together.
+                </p>
+            </div>
+
+            <h3 class="subsection-title" id="agent2-config">
+                Reconciliation Configuration
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:8px">
+                    🔧 Engineer
+                </span>
+            </h3>
+
+            <p>
+                Navigate to
+                <strong>Agent 2 → Reconciliation Config</strong>.
+                The page shows a hierarchy:
+            </p>
+
+            <ul>
+                <li>
+                    <strong>Source Table</strong> — the raw table
+                    being tracked
+                </li>
+                <li>
+                    <strong>Layer Transition</strong> —
+                    RAW → SILVER or SILVER → GOLD
+                </li>
+                <li>
+                    <strong>Check Type</strong> — ROW_COUNT,
+                    AGGREGATE, or FRESHNESS
+                </li>
+                <li>
+                    <strong>Metric</strong> — the specific column
+                    or count being compared
+                </li>
+            </ul>
+
+            <p>
+                Click <strong>Edit Policy</strong> on any check type
+                to change the default warning and critical thresholds.
+                Individual metrics can override the default by clicking
+                <strong>Edit</strong> on the metric row.
+            </p>
+
+            <h3 class="subsection-title" id="agent2-results">
+                Reading Reconciliation Results
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:8px">
+                    🔧 Engineer
+                </span>
+            </h3>
+
+            <p>
+                Navigate to
+                <strong>Agent 2 → Reconciliation Results</strong>.
+                The check results table shows:
+            </p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Column</th>
+                        <th>Meaning</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>From / To</strong></td>
+                        <td>
+                            Which layer transition the check covers
+                            — RAW→SILVER or SILVER→GOLD
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Check</strong></td>
+                        <td>
+                            BRONZE_TO_SILVER_ROW_COUNT,
+                            SILVER_TO_GOLD_AGGREGATE, etc.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Source</strong></td>
+                        <td>
+                            The value in the upstream layer
+                            (e.g. raw row count)
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Target</strong></td>
+                        <td>
+                            The value in the downstream layer
+                            (e.g. silver row count)
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Dev %</strong></td>
+                        <td>
+                            How far target deviated from expected.
+                            Negative = drop. Positive = unexpected
+                            increase.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Agent 1</strong></td>
+                        <td>
+                            The Agent 1 status for the same table
+                            and date. Helps distinguish: did Silver
+                            drop records because Raw had a problem,
+                            or did Silver introduce the problem?
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- AGENT 3                                                    -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="agent3">
+
+            <h2 class="section-title">
+                Agent 3 — Silver SQL Governance
+            </h2>
+
+            <p>
+                Agent 3 reviews the SQL code and Python notebooks that
+                perform Silver transformations. It looks for patterns that
+                could silently corrupt data — things that run without
+                errors but produce wrong results.
+            </p>
+
+            <h3 class="subsection-title" id="agent3-register">
+                Register a Transformation
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:8px">
+                    🔧 Engineer
+                </span>
+            </h3>
+
+            <p>
+                Navigate to
+                <strong>Agent 3 → Transformation Registry</strong>.
+                In the Register New Transformation form:
+            </p>
+
+            <ol>
+                <li>
+                    Select the <strong>Target Silver Table</strong>
+                    from the dropdown (populated from the Layer
+                    Registry).
+                </li>
+                <li>
+                    The <strong>Source Raw Table</strong> and
+                    <strong>Survival Rate</strong> are auto-populated
+                    from the Layer Registry.
+                </li>
+                <li>
+                    Enter the full workspace path to the
+                    <strong>Notebook</strong> containing the
+                    transformation code.
+                </li>
+                <li>
+                    Optionally enter the <strong>Function Name</strong>
+                    to review only a specific function rather than
+                    the whole notebook.
+                </li>
+                <li>
+                    Select which <strong>checks to enable</strong>
+                    from the checklist.
+                </li>
+            </ol>
+
+            <h3 class="subsection-title" id="agent3-checks">
+                What Agent 3 Checks
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:8px">
+                    🔧 Engineer
+                </span>
+            </h3>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Check</th>
+                        <th>Type</th>
+                        <th>What it detects</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                JOIN_FANOUT
+                            </span>
+                        </td>
+                        <td>Static — code analysis</td>
+                        <td>
+                            Join operations without subsequent
+                            deduplication. A non-unique right-side
+                            join multiplies rows silently.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                NULL_FILTER
+                            </span>
+                        </td>
+                        <td>Static — code analysis</td>
+                        <td>
+                            Join keys or aggregation columns
+                            without null protection. Null values
+                            in join keys silently drop rows.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                AGGREGATION_ORDER
+                            </span>
+                        </td>
+                        <td>Static — code analysis</td>
+                        <td>
+                            Filter clauses appearing after
+                            aggregation. Filtering before
+                            aggregation is both more efficient
+                            and logically correct.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">
+                                ROW_COUNT_RATIO
+                            </span>
+                        </td>
+                        <td>Runtime — live data</td>
+                        <td>
+                            Actual Silver row count compared
+                            against the configured expected
+                            survival rate. Detects over-filtering
+                            and join fan-outs with real data.
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 class="subsection-title" id="agent3-results">
+                Reading Review Results
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:8px">
+                    🔧 Engineer
+                </span>
+            </h3>
+
+            <p>
+                Navigate to <strong>Agent 3 → SQL Review</strong>.
+                Select a transformation in the top grid to see its
+                review history. Click a review row to expand the
+                <strong>Failed Check Detail</strong> panel below,
+                which shows the specific findings for each failed check
+                including the exact lines of code flagged and the
+                recommended fix.
+            </p>
+
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- AGENT 4                                                    -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="agent4">
+
+            <h2 class="section-title">
+                Agent 4 — Gold KPI Validation
+            </h2>
+
+            <p>
+                Agent 4 validates the final output of your data platform —
+                the Gold KPIs that feed reports and dashboards. It checks
+                that KPI formulas are mathematically correct, that related
+                KPIs are logically consistent, and that KPI values are
+                within their normal historical range.
+            </p>
+
+            <h3 class="subsection-title" id="agent4-register">
+                Register a KPI
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:8px">
+                    🔧 Engineer
+                </span>
+            </h3>
+
+            <p>
+                Navigate to <strong>Agent 4 → KPI Registry</strong>.
+                For each KPI, provide:
+            </p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Description</th>
+                        <th>Example</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Gold Table</strong></td>
+                        <td>
+                            Which Gold table the KPI lives in
+                        </td>
+                        <td>
+                            <code>uc2_gold_daily_store_metrics</code>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>KPI Name</strong></td>
+                        <td>
+                            Unique identifier for this KPI
+                        </td>
+                        <td><code>return_rate</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>KPI Column</strong></td>
+                        <td>
+                            The column in the Gold table that
+                            holds this KPI's value
+                        </td>
+                        <td><code>return_rate</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Formula Expression</strong></td>
+                        <td>
+                            The right-hand side of the equation
+                            that should produce this KPI's value
+                        </td>
+                        <td>
+                            <code>
+                                return_count / total_transactions
+                            </code>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Min / Max Value</strong></td>
+                        <td>
+                            Business bounds. Values outside this
+                            range trigger a RANGE check failure.
+                        </td>
+                        <td>Min: 0.0 Max: 0.30</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Warning / Critical %</strong></td>
+                        <td>
+                            How far the KPI can deviate from
+                            its baseline mean before triggering
+                            an alert
+                        </td>
+                        <td>Warning: 20% Critical: 50%</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Checks Enabled</strong></td>
+                        <td>
+                            Which of the four check types to
+                            run for this KPI
+                        </td>
+                        <td>FORMULA, RANGE, ANOMALY</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 class="subsection-title" id="agent4-checks">
+                KPI Check Types
+                <span class="tag tag-business"
+                      style="font-size:13px;margin-left:8px">
+                    📊 Business
+                </span>
+            </h3>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Check</th>
+                        <th>What it validates</th>
+                        <th>Example failure</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>
+                            <span class="check-badge">FORMULA</span>
+                        </td>
+                        <td>
+                            The KPI column value equals the
+                            configured formula expression for
+                            every row
+                        </td>
+                        <td>
+                            <code>net_quantity_change</code> ≠
+                            <code>quantity_in - quantity_out</code>
+                            on 100% of rows — formula error
+                            introduced in Gold pipeline
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">CROSS_KPI</span>
+                        </td>
+                        <td>
+                            Related KPIs are logically consistent
+                            with each other
+                        </td>
+                        <td>
+                            <code>return_count</code> >
+                            <code>total_transactions</code> —
+                            mathematically impossible
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">ANOMALY</span>
+                        </td>
+                        <td>
+                            The portfolio average of the KPI is
+                            within the configured deviation band
+                            around the historical baseline mean
+                        </td>
+                        <td>
+                            <code>avg_basket_value</code> is
+                            57.2% below baseline — pricing
+                            error or currency conversion issue
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="check-badge">RANGE</span>
+                        </td>
+                        <td>
+                            KPI values fall within configured
+                            business bounds (min and max)
+                        </td>
+                        <td>
+                            <code>return_rate</code> > 1.0 on
+                            3 stores — return rate cannot
+                            exceed 100%
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 class="subsection-title" id="agent4-baselines">
+                KPI Baselines
+                <span class="tag tag-business"
+                      style="font-size:13px;margin-left:8px">
+                    📊 Business
+                </span>
+            </h3>
+
+            <p>
+                Navigate to <strong>Agent 4 → KPI Baselines</strong>.
+                Select a Gold table and a KPI to see the full baseline
+                statistics — mean, standard deviation, and percentile
+                distribution.
+            </p>
+
+            <p>
+                The <strong>Anomaly Trigger Bounds</strong> panel shows
+                the exact values that would trigger a WARNING or CRITICAL
+                alert today based on the configured deviation thresholds
+                applied to the baseline mean. This answers the question:
+                "at what revenue level would we get an alert?"
+            </p>
+
+            <h3 class="subsection-title" id="agent4-lineage">
+                Data Lineage Viewer
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:8px">
+                    🔧 Engineer
+                </span>
+                <span class="tag tag-business"
+                      style="font-size:13px;margin-left:4px">
+                    📊 Business
+                </span>
+            </h3>
+
+            <p>
+                When a KPI validation run is selected in the History tab,
+                a <strong>Lineage tab</strong> appears. This traces the
+                failed KPI back through all upstream layers:
+            </p>
+
+            <pre><code>return_rate KPI → CRITICAL
+    ↑ computed in
+uc2_gold_daily_store_metrics   [Agent 4: ANOMALY CRITICAL -57%]
+    ↑ aggregated from
+uc2_silver_store_transactions  [Agent 2: survival 69.5%]
+    ↑ transformed from
+uc1_raw_store_transactions     [Agent 1: NULL_SPIKE 21.99%]
+    ↑ sourced from
+Transaction System v3          [External system]</code></pre>
+
+            <p>
+                The colour of each node shows the health at that layer
+                on the same business date. The
+                <strong>Layer-by-Layer Detail</strong> cards below the
+                diagram show the specific metrics. Click any card to
+                navigate to that agent's results page.
+            </p>
+
+        </div>
+
+        <hr class="divider">
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- AI INSIGHTS                                                -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="ai-insights">
+
+            <h2 class="section-title">
+                AI Insights — Cross-Agent Narrative
+                <span class="tag tag-business"
+                      style="font-size:13px;margin-left:12px">
+                    📊 Business
+                </span>
+                <span class="tag tag-manager"
+                      style="font-size:13px;margin-left:4px">
+                    📈 Manager
+                </span>
+            </h2>
+
+            <p>
+                The AI Insights page generates a single plain-English
+                narrative explaining what happened across all four agents
+                for any business date. It is the starting point for
+                understanding any day with issues, before diving into
+                individual agent pages.
+            </p>
+
+            <h3 class="subsection-title">How to Use It</h3>
+
+            <ol>
+                <li>
+                    Navigate to <strong>🤖 AI Insights</strong>
+                    in the navbar.
+                </li>
+                <li>
+                    Enter the business date you want to analyse
+                    in <code>YYYY-MM-DD</code> format.
+                </li>
+                <li>
+                    Click <strong>Generate Insights</strong>.
+                    This takes 30–60 seconds as the AI reads
+                    data from all four agents.
+                </li>
+            </ol>
+
+            <h3 class="subsection-title" id="ai-narrative">
+                Reading the Narrative
+            </h3>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Section</th>
+                        <th>What it contains</th>
+                        <th>Who reads it</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Executive Summary</strong></td>
+                        <td>
+                            2–3 sentences naming the tables affected,
+                            the layers involved, and the key deviation
+                            percentages
+                        </td>
+                        <td>Everyone</td>
+                    </tr>
+                    <tr>
+                        <td><strong>What Went Wrong</strong></td>
+                        <td>
+                            One bullet point per failed check with
+                            specific numbers — observed values,
+                            deviation percentages, and which agent
+                            detected it
+                        </td>
+                        <td>Engineers, stewards</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Root Cause</strong></td>
+                        <td>
+                            Which layer introduced the problem and
+                            the cascade mechanism — how the issue
+                            propagated from source to Gold
+                        </td>
+                        <td>Engineers</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <strong>Cross-Agent Correlation</strong>
+                        </td>
+                        <td>
+                            How findings from all four agents relate
+                            to each other — confirms the story is
+                            internally consistent
+                        </td>
+                        <td>Engineers</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <strong>Recommended Actions</strong>
+                        </td>
+                        <td>
+                            Numbered list of specific steps in
+                            pipeline order — what to check first,
+                            second, and third
+                        </td>
+                        <td>Engineers</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Watch Tomorrow</strong></td>
+                        <td>
+                            Which specific metrics and tables to
+                            monitor on the next pipeline run,
+                            with a specific threshold to watch for
+                        </td>
+                        <td>Everyone</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="callout callout-info">
+                <strong>AI Insights requires data from the agents</strong>
+                <p>
+                    The narrative is generated from validation run
+                    records already in the database. If an agent has
+                    not run for the selected date, that agent's section
+                    will show "NOT RUN for this date" in the narrative.
+                    Agent 3 is not date-partitioned — it shows the
+                    most recent code review results regardless of date.
+                </p>
+            </div>
+
+        </div>
+
+        <hr class="divider">
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- BUSINESS PAGES                                             -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="status-page">
+
+            <h2 class="section-title">
+                Platform Status Page
+                <span class="tag tag-manager"
+                      style="font-size:13px;margin-left:12px">
+                    📈 Manager
+                </span>
+                <span class="tag tag-business"
+                      style="font-size:13px;margin-left:4px">
+                    📊 Business
+                </span>
+            </h2>
+
+            <p>
+                Navigate to <strong>/status</strong>. This page is
+                designed for finance directors, analysts, and anyone
+                who needs to know if today's data is trustworthy —
+                without understanding what a NULL spike is.
+            </p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Domain</th>
+                        <th>Data source</th>
+                        <th>Status logic</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Customer Data</strong></td>
+                        <td>Agent 1 — raw transactions</td>
+                        <td>
+                            Mirrors transaction status but capped
+                            at WARNING even when transactions
+                            are CRITICAL — a volume drop does not
+                            mean customer records are corrupted
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Transaction Data</strong></td>
+                        <td>Agent 1 — raw transactions</td>
+                        <td>
+                            Overall status from latest A1 run
+                            for <code>uc1_raw_store_transactions</code>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Inventory Data</strong></td>
+                        <td>Agent 1 — raw inventory</td>
+                        <td>
+                            Overall status from latest A1 run
+                            for
+                            <code>uc1_raw_inventory_movements</code>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Financial Reports</strong></td>
+                        <td>Agent 4 — Gold KPIs</td>
+                        <td>
+                            Worst status across both Gold tables
+                            from the latest A4 run
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <p>
+                The <strong>What this means</strong> section appears
+                only when something is not green. It uses the AI summary
+                already stored in the database — no new AI call is made
+                when the page loads.
+            </p>
+
+        </div>
+
+        <div class="section" id="quality-score">
+
+            <h2 class="section-title">
+                Data Quality Score
+                <span class="tag tag-manager"
+                      style="font-size:13px;margin-left:12px">
+                    📈 Manager
+                </span>
+                <span class="tag tag-business"
+                      style="font-size:13px;margin-left:4px">
+                    📊 Business
+                </span>
+            </h2>
+
+            <p>
+                Navigate to <strong>📈 Quality Score</strong>.
+                The quality score is a single number from 0 to 100
+                that represents the overall health of the data platform
+                on any given date.
+            </p>
+
+            <h3 class="subsection-title">
+                How the Score is Computed
+            </h3>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Dimension</th>
+                        <th>Weight</th>
+                        <th>Source</th>
+                        <th>What it measures</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Raw Completeness</strong></td>
+                        <td>25%</td>
+                        <td>Agent 1</td>
+                        <td>
+                            Content quality checks — null rates,
+                            schema, malformed records, categorical
+                            violations
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <strong>Pipeline Reliability</strong>
+                        </td>
+                        <td>25%</td>
+                        <td>Agent 1 + Agent 2</td>
+                        <td>
+                            Volume delivery (did the pipeline produce
+                            expected records) + survival rates
+                            (did records make it through transformation)
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>KPI Accuracy</strong></td>
+                        <td>25%</td>
+                        <td>Agent 4</td>
+                        <td>
+                            Formula correctness, cross-KPI consistency,
+                            anomaly detection, range compliance
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Freshness</strong></td>
+                        <td>15%</td>
+                        <td>Agent 2</td>
+                        <td>
+                            Layer freshness checks — did Silver
+                            and Gold data arrive for this date
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <strong>Governance Health</strong>
+                        </td>
+                        <td>10%</td>
+                        <td>Agent 3</td>
+                        <td>
+                            SQL review results — are transformations
+                            free of risky patterns
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <p>
+                Each dimension is scored as:
+                <code>(PASS checks + 0.5 × WARNING checks) / total checks × 100</code>.
+                Dimensions with no data for a date are excluded from
+                the weighted average rather than counted as zero.
+            </p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Score range</th>
+                        <th>Interpretation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>90 – 100</td>
+                        <td>
+                            <span class="badge badge-pass">
+                                Good
+                            </span>
+                            All systems operating normally
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>75 – 89</td>
+                        <td>
+                            <span class="badge badge-warning">
+                                Fair
+                            </span>
+                            Minor issues present — monitor closely
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>0 – 74</td>
+                        <td>
+                            <span class="badge badge-critical">
+                                Needs attention
+                            </span>
+                            Significant issues — investigate
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+        </div>
+
+        <div class="section" id="pipeline-health">
+
+            <h2 class="section-title">
+                Pipeline Health
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:12px">
+                    🔧 Engineer
+                </span>
+                <span class="tag tag-manager"
+                      style="font-size:13px;margin-left:4px">
+                    📈 Manager
+                </span>
+            </h2>
+
+            <p>
+                Navigate to <strong>⚡ Pipeline Health</strong>.
+                This page shows the operational health of your ingestion
+                pipelines over the last 30 days — not just today's
+                status but trends, patterns, and reliability statistics.
+            </p>
+
+            <h3 class="subsection-title">Sections</h3>
+
+            <ul>
+                <li>
+                    <strong>Current Status</strong> — two cards
+                    showing today's status for each pipeline with
+                    volume, SLA compliance, and worst check.
+                </li>
+                <li>
+                    <strong>30-Day History</strong> — calendar
+                    heatmap showing status for each date.
+                    Green = PASS, yellow = WARNING, red = CRITICAL.
+                    Hover any cell for details.
+                </li>
+                <li>
+                    <strong>30-Day Reliability Metrics</strong> —
+                    success rate, average volume, most common
+                    failure type, and average run duration for
+                    each pipeline.
+                </li>
+                <li>
+                    <strong>Volume Trend</strong> — line chart
+                    showing daily row count over 30 days with
+                    baseline mean as a reference line.
+                    A red ✕ indicates a zero-row date (silent
+                    pipeline failure).
+                </li>
+                <li>
+                    <strong>Failure History</strong> — table of
+                    every CRITICAL and WARNING check in the period,
+                    with direct links to the full Agent 1 results
+                    for that date.
+                </li>
+            </ul>
+
+        </div>
+
+        <div class="section" id="nlq">
+
+            <h2 class="section-title">
+                Natural Language Query
+                <span class="tag tag-business"
+                      style="font-size:13px;margin-left:12px">
+                    📊 Business
+                </span>
+                <span class="tag tag-engineer"
+                      style="font-size:13px;margin-left:4px">
+                    🔧 Engineer
+                </span>
+            </h2>
+
+            <p>
+                On the Dashboard, the
+                <strong>Ask DataSentinel</strong> search bar lets you
+                query the platform in plain English. Type your question
+                and press Enter or click <strong>Ask →</strong>.
+            </p>
+
+            <h3 class="subsection-title">Example Queries</h3>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Question</th>
+                        <th>What you get</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>
+                            "Which tables had volume drops last week?"
+                        </td>
+                        <td>
+                            Filtered Agent 1 results showing only
+                            VOLUME_ANOMALY failures in the last 7 days
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            "What caused the KPI failure on June 21st?"
+                        </td>
+                        <td>
+                            Agent 4 failed checks for that date with
+                            the AI explanation surfaced at the top
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            "How many CRITICAL alerts this month?"
+                        </td>
+                        <td>
+                            Summary count cards broken down by agent
+                            with a link to the full failure list
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            "Is transaction data healthy today?"
+                        </td>
+                        <td>
+                            Agent 1, 2, and 4 status for today's date
+                            for the transaction pipeline
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            "Show me Agent 2 summary for last week"
+                        </td>
+                        <td>
+                            Agent 2 reconciliation run history for the
+                            last 7 days
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="callout callout-info">
+                <strong>How the NLQ works</strong>
+                <p>
+                    The AI classifies your question into one of seven
+                    intents and extracts parameters like dates and
+                    table names. The data fetch is then entirely
+                    deterministic SQL — the AI never generates SQL or
+                    invents data. Relative dates like "last week" and
+                    "this month" are resolved against today's date
+                    at query time.
+                </p>
+            </div>
+
+        </div>
+
+        <hr class="divider">
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- ALL PAGES REFERENCE                                        -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="all-pages">
+
+            <h2 class="section-title">All Pages — Reference</h2>
+
+            <div class="page-grid">
+                <div class="page-item">
+                    <span class="route">/</span>
+                    <span class="purpose">
+                        Dashboard — overall platform overview,
+                        quality score widget, recent runs
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/status</span>
+                    <span class="purpose">
+                        Platform Status — business-facing health
+                        page in plain English
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/quality-score</span>
+                    <span class="purpose">
+                        Data Quality Score — 0–100 score,
+                        dimension breakdown, 90-day trend chart
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/pipeline-health</span>
+                    <span class="purpose">
+                        Pipeline Health — status cards, heatmap,
+                        volume trend, failure history
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/ai-insights</span>
+                    <span class="purpose">
+                        AI Insights — cross-agent narrative for
+                        any business date
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/table-registry</span>
+                    <span class="purpose">
+                        Table Registry — register and manage
+                        tables for Agent 1 monitoring
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/column-registry</span>
+                    <span class="purpose">
+                        Column Registry — enrol columns for
+                        column-level validation checks
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/validations</span>
+                    <span class="purpose">
+                        Validations — configure check types
+                        and thresholds per table and column
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/baselines</span>
+                    <span class="purpose">
+                        Baselines — view computed baseline
+                        statistics for each check type
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/baseline-explorer</span>
+                    <span class="purpose">
+                        Baseline Explorer — interactive charts
+                        showing baseline distributions with
+                        threshold bands
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/validation-results</span>
+                    <span class="purpose">
+                        Validation Results — Agent 1 run history,
+                        individual check results, AI summaries,
+                        Teams alert preview
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/layer-registry</span>
+                    <span class="purpose">
+                        Layer Registry — register Raw, Silver,
+                        and Gold layers for Agent 2 reconciliation
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/recon-config</span>
+                    <span class="purpose">
+                        Reconciliation Config — configure check
+                        policies and metric thresholds for Agent 2
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/reconciliation</span>
+                    <span class="purpose">
+                        Reconciliation Results — Agent 2 run
+                        history, check results, survival rates,
+                        Teams alert preview
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/transformation-registry</span>
+                    <span class="purpose">
+                        Transformation Registry — register Silver
+                        transformation notebooks for Agent 3 review
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/sql-review</span>
+                    <span class="purpose">
+                        SQL Review — Agent 3 review history,
+                        failed check detail, AI code review summary
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/kpi-registry</span>
+                    <span class="purpose">
+                        KPI Registry — register and manage Gold
+                        KPIs for Agent 4 validation
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/kpi-baselines</span>
+                    <span class="purpose">
+                        KPI Baselines — view baseline statistics
+                        and anomaly trigger bounds for each KPI
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/kpi-validation</span>
+                    <span class="purpose">
+                        KPI Validation — Agent 4 run history,
+                        check results, data lineage viewer,
+                        Teams alert preview
+                    </span>
+                </div>
+                <div class="page-item">
+                    <span class="route">/debug</span>
+                    <span class="purpose">
+                        Debug — connection test for engineers.
+                        Remove before production deployment.
+                    </span>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- CHECK TYPES REFERENCE                                      -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="check-types-ref">
+
+            <h2 class="section-title">Check Types — Full Reference</h2>
+
+            <h3 class="subsection-title">
+                Agent 1 — Threshold Units
+            </h3>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Unit</th>
+                        <th>Meaning</th>
+                        <th>Used by</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>PERCENTAGE</code></td>
+                        <td>
+                            Threshold is a percentage value.
+                            E.g. 5 means "flag if over 5%".
+                        </td>
+                        <td>
+                            NULL_SPIKE, VOLUME_ANOMALY,
+                            MALFORMED_RECORDS, NUMERIC_RANGE,
+                            CATEGORICAL_DOMAIN
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><code>COUNT</code></td>
+                        <td>
+                            Threshold is an absolute count.
+                            E.g. 1 means "flag if more than 1
+                            column changed."
+                        </td>
+                        <td>SCHEMA_CONFORMANCE</td>
+                    </tr>
+                    <tr>
+                        <td><code>MINUTES</code></td>
+                        <td>
+                            Threshold is a time in minutes.
+                            E.g. 120 means "flag if data arrives
+                            more than 120 minutes late."
+                        </td>
+                        <td>PARTITION_FRESHNESS</td>
+                    </tr>
+                    <tr>
+                        <td><code>STDDEV_MULTIPLIER</code></td>
+                        <td>
+                            Threshold is a multiple of the
+                            baseline standard deviation.
+                            E.g. 2 means "flag if value is
+                            more than 2 stddevs from mean."
+                        </td>
+                        <td>DISTRIBUTION_DRIFT</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 class="subsection-title">
+                Agent 4 — KPI Check Types
+            </h3>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Check type</th>
+                        <th>Observed value</th>
+                        <th>Expected value</th>
+                        <th>Deviation means</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>FORMULA</code></td>
+                        <td>Violation count</td>
+                        <td>0 (no violations)</td>
+                        <td>% of rows with formula error</td>
+                    </tr>
+                    <tr>
+                        <td><code>CROSS_KPI</code></td>
+                        <td>Violation count</td>
+                        <td>0 (no violations)</td>
+                        <td>% of rows breaking the rule</td>
+                    </tr>
+                    <tr>
+                        <td><code>ANOMALY</code></td>
+                        <td>Portfolio average today</td>
+                        <td>Baseline mean</td>
+                        <td>
+                            % deviation of today's average
+                            from baseline mean
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><code>RANGE</code></td>
+                        <td>Out-of-range count</td>
+                        <td>0 (no violations)</td>
+                        <td>% of rows outside min/max bounds</td>
+                    </tr>
+                </tbody>
+            </table>
+
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- DATA MODEL                                                 -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="data-model">
+
+            <h2 class="section-title">Data Model</h2>
+
+            <p>
+                DataSentinel uses 23 Delta tables organised into five
+                groups: pilot data tables (the tables being monitored)
+                and four groups of metadata tables (one per agent).
+            </p>
+
+            <h3 class="subsection-title">
+                Data Flow — Raw to Silver to Gold
+            </h3>
+
+            <div class="mermaid-container">
+                <div class="mermaid">
+flowchart LR
+    R1["uc1_raw_store_transactions\nFILE / BATCH / DAILY"]
+    R2["uc1_raw_inventory_movements\nCDC / AUTOLOADER"]
+    S1["uc2_silver_store_transactions\nDeduped, VOID excluded"]
+    S2["uc2_silver_inventory_movements\nDELETE filtered, deduped"]
+    G1["uc2_gold_daily_store_metrics\nOne row per store per date"]
+    G2["uc2_gold_daily_inventory_summary\nOne row per warehouse/event/date"]
+
+    R1 -->|"transform_raw_to_silver_transactions"| S1
+    R2 -->|"transform_raw_to_silver_inventory"| S2
+    S1 -->|"aggregate_silver_to_gold_transactions"| G1
+    S2 -->|"aggregate_silver_to_gold_inventory"| G2
+
+    style R1 fill:#1a2a3a,stroke:#375a7f,color:#fff
+    style R2 fill:#1a2a3a,stroke:#375a7f,color:#fff
+    style S1 fill:#0a2a2a,stroke:#2d6a4f,color:#fff
+    style S2 fill:#0a2a2a,stroke:#2d6a4f,color:#fff
+    style G1 fill:#2a1a0a,stroke:#7d4a1a,color:#fff
+    style G2 fill:#2a1a0a,stroke:#7d4a1a,color:#fff
+                </div>
+            </div>
+
+            <h3 class="subsection-title">
+                Agent 1 Metadata Tables
+            </h3>
+
+            <div class="mermaid-container">
+                <div class="mermaid">
+erDiagram
+    uc1_table_registry ||--o{ uc1_column_registry : "registers columns for"
+    uc1_table_registry ||--o{ uc1_column_validation_registry : "configures checks for"
+    uc1_table_registry ||--o{ uc1_table_validation_registry : "configures checks for"
+    uc1_table_registry ||--o{ uc1_baseline_metrics : "baseline computed for"
+    uc1_table_registry ||--o{ uc1_validation_run : "validated in"
+    uc1_column_registry ||--o{ uc1_column_validation_registry : "has validations"
+    uc1_validation_run ||--o{ uc1_validation_results : "produces"
+    uc1_baseline_metrics ||--o{ uc1_validation_results : "referenced by"
+
+    uc1_table_registry {
+        string table_id PK
+        string fully_qualified_name UK
+        string source_type
+        string ingestion_pattern
+        string ingestion_frequency
+        string partition_column
+        string business_date_column
+        int expected_arrival_window_minutes
+        boolean is_active
+    }
+
+    uc1_validation_run {
+        string validation_run_id PK
+        string fully_qualified_name FK
+        date business_date
+        string overall_status
+        int total_checks_critical
+        string ai_enrichment_status
+        boolean alert_sent
+    }
+
+    uc1_validation_results {
+        string result_id PK
+        string validation_run_id FK
+        string check_type
+        string check_status
+        double observed_value
+        double baseline_value
+        double deviation_percentage
+        string ai_summary
+        string ai_failure_category
+        double ai_confidence_score
+    }
+
+    uc1_baseline_metrics {
+        string baseline_id PK
+        string fully_qualified_name FK
+        string check_type
+        double mean_value
+        double stddev_value
+        double p95_value
+        int sample_count
+        string baseline_status
+    }
+                </div>
+            </div>
+
+            <h3 class="subsection-title">
+                Agent 2 Metadata Tables
+            </h3>
+
+            <div class="mermaid-container">
+                <div class="mermaid">
+erDiagram
+    uc2_layer_registry ||--o{ uc2_layer_check_config : "configured by"
+    uc2_layer_registry ||--o{ uc2_reconciliation_metric_config : "metrics defined in"
+    uc2_layer_registry ||--o{ uc2_reconciliation_run : "reconciled in"
+    uc2_reconciliation_run ||--o{ uc2_reconciliation_results : "produces"
+    uc1_validation_run ||--o{ uc2_reconciliation_run : "provides context to"
+
+    uc2_layer_registry {
+        string layer_id PK
+        string source_fully_qualified_name FK
+        string layer_name
+        string layer_fully_qualified_name
+        double expected_survival_rate
+        int expected_latency_minutes
+        boolean is_active
+    }
+
+    uc2_reconciliation_run {
+        string reconciliation_run_id PK
+        string source_fully_qualified_name FK
+        date business_date
+        string overall_status
+        int total_checks_critical
+        string agent1_validation_run_id FK
+        boolean alert_sent
+    }
+
+    uc2_reconciliation_results {
+        string result_id PK
+        string reconciliation_run_id FK
+        string from_layer
+        string to_layer
+        string check_type
+        string metric_name
+        string check_status
+        double source_value
+        double target_value
+        double deviation_percentage
+        string agent1_overall_status
+        string ai_summary
+    }
+                </div>
+            </div>
+
+            <h3 class="subsection-title">
+                Agent 3 Metadata Tables
+            </h3>
+
+            <div class="mermaid-container">
+                <div class="mermaid">
+erDiagram
+    uc3_transformation_registry ||--o{ uc3_review_results : "reviewed in"
+
+    uc3_transformation_registry {
+        string transformation_id PK
+        string target_fully_qualified_name FK
+        string source_fully_qualified_name FK
+        string notebook_path
+        string function_name
+        double expected_survival_rate
+        string last_review_status
+        boolean is_active
+    }
+
+    uc3_review_results {
+        string review_id PK
+        string transformation_id FK
+        date business_date
+        string overall_status
+        int total_checks_critical
+        string check_results
+        string ai_summary
+        string ai_failure_category
+        double ai_confidence_score
+        boolean alert_sent
+    }
+                </div>
+            </div>
+
+            <h3 class="subsection-title">
+                Agent 4 Metadata Tables
+            </h3>
+
+            <div class="mermaid-container">
+                <div class="mermaid">
+erDiagram
+    uc4_kpi_registry ||--o{ uc4_kpi_baseline_metrics : "baseline computed for"
+    uc4_kpi_registry ||--o{ uc4_kpi_validation_results : "validated in"
+    uc4_kpi_validation_run ||--o{ uc4_kpi_validation_results : "produces"
+    uc4_kpi_baseline_metrics ||--o{ uc4_kpi_validation_results : "referenced by"
+    uc2_reconciliation_run ||--o{ uc4_kpi_validation_run : "provides context to"
+
+    uc4_kpi_registry {
+        string kpi_id PK
+        string gold_fully_qualified_name FK
+        string kpi_name
+        string kpi_column
+        string formula_expression
+        double min_value
+        double max_value
+        double warning_deviation_pct
+        double critical_deviation_pct
+        string checks_enabled
+        boolean is_active
+    }
+
+    uc4_kpi_baseline_metrics {
+        string baseline_id PK
+        string gold_fully_qualified_name FK
+        string kpi_name FK
+        date baseline_date
+        double mean_value
+        double stddev_value
+        int sample_count
+        string baseline_status
+    }
+
+    uc4_kpi_validation_run {
+        string validation_run_id PK
+        string gold_fully_qualified_name FK
+        date business_date
+        string overall_status
+        int total_kpis_critical
+        string ai_enrichment_status
+        boolean alert_sent
+    }
+
+    uc4_kpi_validation_results {
+        string result_id PK
+        string validation_run_id FK
+        string kpi_name FK
+        string check_type
+        string check_status
+        double observed_value
+        double expected_value
+        double deviation_percentage
+        string ai_summary
+        string ai_failure_category
+        double ai_confidence_score
+    }
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════ -->
+        <!-- TROUBLESHOOTING                                            -->
+        <!-- ══════════════════════════════════════════════════════════ -->
+
+        <div class="section" id="troubleshooting">
+
+            <h2 class="section-title">Troubleshooting</h2>
+
+            <details class="trouble-item">
+                <summary>
+                    Agent ran but no results appear in the UI
+                </summary>
+                <p>
+                    The most common cause is that the notebook used
+                    <code>dbutils.notebook.exit()</code> which causes
+                    Databricks Workflows to mark the task as succeeded
+                    without writing any results. DataSentinel agents use
+                    a flag variable pattern instead. Check the notebook
+                    output for <code>NO_PENDING_RUNS = True</code> —
+                    this means the agent found no tables needing
+                    validation, which is correct behaviour.
+                    Also verify the business date parameter matches
+                    a date that has raw data.
+                </p>
+            </details>
+
+            <details class="trouble-item">
+                <summary>
+                    AI enrichment stuck in PENDING
+                </summary>
+                <p>
+                    The AI summarization notebook has not run, or it
+                    ran but failed to update the status. Navigate to
+                    the Databricks Workflow run history and check the
+                    <code>run_ai_summarization</code> task output.
+                    Common causes: model endpoint timeout (increase
+                    timeout to 180 seconds), empty model response
+                    (the model returned an empty content block — retry),
+                    or JSON parse error (the model wrapped the response
+                    in markdown code fences — the parser handles this
+                    but may fail on unusual formatting).
+                </p>
+            </details>
+
+            <details class="trouble-item">
+                <summary>
+                    Teams alert not received
+                </summary>
+                <p>
+                    Check three things in order:
+                    (1) The run has <code>alert_sent = true</code>
+                    in the validation run table — if not, the
+                    dispatcher did not run or failed.
+                    (2) The webhook URL in the secret scope
+                    <code>agent1-secrets / teams-webhook-url</code>
+                    is valid and not expired.
+                    (3) The Teams channel connector is still active —
+                    connectors expire after 90 days in some tenants.
+                    The dispatcher uses MessageCard format, not
+                    Adaptive Cards. If the channel returns
+                    "unsupported card type" the webhook is pointed
+                    at a channel that requires Adaptive Cards.
+                </p>
+            </details>
+
+            <details class="trouble-item">
+                <summary>
+                    Baseline shows INSUFFICIENT_DATA
+                </summary>
+                <p>
+                    The baseline computation found fewer than 7 data
+                    points in the baseline window. For VOLUME_ANOMALY
+                    this means fewer than 7 distinct business dates
+                    had data in the baseline window. Check that:
+                    (1) the baseline window dates actually have data
+                    in the raw table,
+                    (2) the <code>business_date_column</code> in the
+                    Table Registry matches the actual partition column
+                    name in the table,
+                    (3) no excluded dates removed too many samples
+                    from the window.
+                </p>
+            </details>
+
+            <details class="trouble-item">
+                <summary>
+                    Quality score seems too high when a pipeline failed
+                </summary>
+                <p>
+                    The quality score excludes dimensions that have no
+                    data rather than scoring them as zero. If Agent 4
+                    did not run (because Gold had zero rows), the KPI
+                    Accuracy dimension is excluded from the weighted
+                    average, which inflates the overall score. This is
+                    a known issue. The Pipeline Reliability dimension
+                    should still reflect the failure through Agent 1
+                    VOLUME_ANOMALY checks — check that VOLUME_ANOMALY
+                    results exist for the date in question.
+                </p>
+            </details>
+
+            <details class="trouble-item">
+                <summary>
+                    Validation Results page shows blank dropdowns
+                </summary>
+                <p>
+                    This is a Dash/Bootstrap theme conflict where the
+                    dropdown option text colour matches the background.
+                    Ensure <code>custom.css</code> contains the
+                    <code>.Select-option</code> CSS rules with
+                    <code>color: #ffffff !important</code>.
+                    If you have multiple Bootstrap themes loaded,
+                    the later one may override the dropdown styles.
+                </p>
+            </details>
+
+            <details class="trouble-item">
+                <summary>
+                    AI Insights shows "No validation data found"
+                    for a date that has runs
+                </summary>
+                <p>
+                    The AI Insights page loads Agent 1 and Agent 4
+                    data filtered by <code>business_date</code>.
+                    Verify the exact date string — dates must be in
+                    <code>YYYY-MM-DD</code> format. Also check that
+                    the run was not soft-deleted from the validation
+                    tables. Agent 3 data is not date-filtered — it
+                    always shows the most recent reviews regardless
+                    of the date selected.
+                </p>
+            </details>
+
+            <details class="trouble-item">
+                <summary>
+                    The Data Lineage viewer shows no data
+                </summary>
+                <p>
+                    The lineage viewer requires a validation run to
+                    be selected in the History tab first. If the
+                    run has no <code>gold_fully_qualified_name</code>
+                    or no corresponding entry in
+                    <code>uc2_layer_registry</code>, the lineage
+                    cannot be traced. Ensure that the Gold table for
+                    this KPI has layers registered in Agent 2 →
+                    Layer Registry with BRONZE, SILVER, and GOLD entries
+                    for the same source table.
+                </p>
+            </details>
+
+        </div>
+
+        <!-- ── Footer ─────────────────────────────────────────────── -->
+
+        <hr class="divider">
+
+        <p style="color:#334155;font-size:13px;text-align:center;
+                  padding-bottom:48px">
+            DataSentinel — Data Trust Layer ·
+            Built on Databricks · Python Dash · GPT-OSS 20B
+        </p>
+
+    </main>
+
+</div>
+
+<!-- ── Sidebar active state on scroll ──────────────────────────────── -->
+
+<script>
+    mermaid.initialize({
+        startOnLoad  : true,
+        theme        : 'dark',
+        themeVariables: {
+            background       : '#0a1520',
+            primaryColor     : '#1e3a5f',
+            primaryTextColor : '#e0e6ed',
+            primaryBorderColor: '#4a9edd',
+            lineColor        : '#4a9edd',
+            secondaryColor   : '#0f2035',
+            tertiaryColor    : '#0a1520',
+            edgeLabelBackground: '#0a1520',
+            clusterBkg       : '#0a1520',
+            titleColor       : '#e0e6ed',
+        }
+    });
+
+    // Sidebar active link on scroll
+    const sections = document.querySelectorAll('.section');
+    const navLinks = document.querySelectorAll('.sidebar a');
+
+    const observer = new IntersectionObserver(
+        (entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    navLinks.forEach(link => {
+                        link.classList.remove('active');
+                        if (link.getAttribute('href') ===
+                            '#' + entry.target.id) {
+                            link.classList.add('active');
+                        }
+                    });
+                }
+            });
+        },
+        { threshold: 0.2 }
+    );
+
+    sections.forEach(section => observer.observe(section));
+</script>
+
+</body>
+</html>

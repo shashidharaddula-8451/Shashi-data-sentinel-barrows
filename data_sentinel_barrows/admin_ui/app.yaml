@@ -1,0 +1,24 @@
+# app.yaml
+
+command: ["python", "app.py"]
+
+env:
+  - name: "DATABRICKS_HOST"
+    value: "https://adb-8005091109336306.6.azuredatabricks.net"
+
+  - name: "DATABRICKS_HTTP_PATH"
+    value: "/sql/1.0/warehouses/18a5ca649627f957"
+
+  - name: "DATABRICKS_AUTH_MODE"
+    value: "pat"
+
+  # Token is read from the app's secret resource "app_token"
+  # (scope s819534-data-sentinel, key app-token). Never put the value here.
+  - name: "DATABRICKS_TOKEN"
+    valueFrom: "app_token"
+
+  - name: "TARGET_CATALOG"
+    value: "learning_dev"
+
+  - name: "TARGET_SCHEMA"
+    value: "s819534"
