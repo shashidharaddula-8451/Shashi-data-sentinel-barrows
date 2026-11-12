@@ -63,3 +63,20 @@ jobs:
       - name: Result
         run: |
           databricks apps get "$APP_NAME" --output json | jq '{name, url, state: .app_status.state}'
+
+      - name: Deployment summary
+        run: |
+          app_json=$(databricks apps get "$APP_NAME" --output json)
+          app_url=$(echo "$app_json" | jq -r '.url // "n/a"')
+          app_state=$(echo "$app_json" | jq -r '.app_status.state // "n/a"')
+          compute_state=$(echo "$app_json" | jq -r '.compute_status.state // "n/a"')
+          {
+            echo "## Databricks App Deployment"
+            echo ""
+            echo "- Branch: ${GITHUB_REF_NAME}"
+            echo "- Commit: ${GITHUB_SHA}"
+            echo "- App: ${APP_NAME}"
+            echo "- URL: ${app_url}"
+            echo "- App State: ${app_state}"
+            echo "- Compute State: ${compute_state}"
+          } >> "$GITHUB_STEP_SUMMARY"
