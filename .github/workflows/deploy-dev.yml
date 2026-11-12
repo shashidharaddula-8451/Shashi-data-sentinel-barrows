@@ -57,8 +57,40 @@ jobs:
 
       - name: Deploy app
         run: |
-          databricks apps deploy "$APP_NAME" \
-            --source-code-path "/Workspace${GIT_FOLDER}/${APP_SUBPATH}" --timeout 20m
+          max_attempts=7
+          sleep_seconds=180
+          attempt=1
+
+          while [ "$attempt" -le "$max_attempts" ]; do
+            echo "Deploy attempt ${attempt}/${max_attempts}"
+
+            set +e
+            deploy_output=$(databricks apps deploy "$APP_NAME" \
+              --source-code-path "/Workspace${GIT_FOLDER}/${APP_SUBPATH}" --timeout 20m 2>&1)
+            deploy_rc=$?
+            set -e
+
+            echo "$deploy_output"
+
+            if [ "$deploy_rc" -eq 0 ]; then
+              echo "Deployment succeeded on attempt ${attempt}."
+              break
+            fi
+
+            if echo "$deploy_output" | grep -qi "pending deployment in progress"; then
+              if [ "$attempt" -lt "$max_attempts" ]; then
+                echo "Another deployment is still active. Waiting ${sleep_seconds}s before retry..."
+                sleep "$sleep_seconds"
+                attempt=$((attempt + 1))
+                continue
+              fi
+              echo "Deployment lock did not clear in time after ${max_attempts} attempts."
+              exit 1
+            fi
+
+            echo "Deploy failed for a non-retryable reason."
+            exit "$deploy_rc"
+          done
 
       - name: Result
         run: |
