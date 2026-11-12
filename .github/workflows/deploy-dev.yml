@@ -1,0 +1,65 @@
+# Push to feature/** -> Databricks folder switches to that branch -> app redeploys
+# Merge to main      -> Databricks folder switches back to main  -> app redeploys
+#
+# Required GitHub settings (repo Settings > Secrets and variables > Actions):
+#   Secret   DATABRICKS_TOKEN - Databricks personal access token
+#   Variable DATABRICKS_HOST  - https://adb-8005091109336306.6.azuredatabricks.net
+#   Variable GIT_FOLDER       - /Users/s819534@8451.com/Shashi-data-sentinel-barrows-dev
+#   Variable APP_NAME         - shashi-data-sentinel-barrows
+#
+# Do not edit files directly inside the Databricks Git folder; uncommitted
+# changes there block the branch switch. Work in VS Code on feature branches.
+
+name: Deploy to Databricks (gbx0-dev)
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: databricks-app-deploy
+  cancel-in-progress: true
+
+env:
+  DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+  GIT_FOLDER: ${{ vars.GIT_FOLDER }}
+  APP_NAME: ${{ vars.APP_NAME }}
+  APP_SUBPATH: data_sentinel_barrows/admin_ui
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Basic checks
+        run: |
+          python -m compileall -q data_sentinel_barrows/admin_ui
+          if grep -rIE "dapi[0-9a-f]{20,}" --exclude-dir=.git . ; then
+            echo "Hardcoded Databricks token found. Remove it." && exit 1
+          fi
+
+      - uses: databricks/setup-cli@main
+
+      - name: Check connection to gbx0-dev
+        run: databricks current-user me --output json | jq -r .userName
+
+      - name: Switch Databricks folder to ${{ github.ref_name }}
+        run: databricks repos update "$GIT_FOLDER" --branch "$GITHUB_REF_NAME"
+
+      - name: Start app if stopped
+        run: |
+          s=$(databricks apps get "$APP_NAME" --output json | jq -r .compute_status.state)
+          echo "Compute state: $s"
+          [ "$s" = "ACTIVE" ] || databricks apps start "$APP_NAME" --timeout 20m
+
+      - name: Deploy app
+        run: |
+          databricks apps deploy "$APP_NAME" \
+            --source-code-path "/Workspace${GIT_FOLDER}/${APP_SUBPATH}" --timeout 20m
+
+      - name: Result
+        run: |
+          databricks apps get "$APP_NAME" --output json | jq '{name, url, state: .app_status.state}'
