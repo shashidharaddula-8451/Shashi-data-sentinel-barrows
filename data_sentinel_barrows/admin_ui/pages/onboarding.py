@@ -7,6 +7,10 @@ from db.connection import execute_query, execute_write, validate_identifier, get
 from config.settings import (
     TARGET_CATALOG, TARGET_SCHEMA,
     COLUMN_LEVEL_VALIDATIONS,
+    COLUMN_CHECKS_BY_TYPE,
+    TYPE_FAMILY,
+    ID_COLUMN_CHECKS,
+    ID_NAME_REGEX,
 )
 from components.alerts import error_alert, warning_alert
 from datetime import date, timedelta
@@ -148,21 +152,36 @@ def is_complex_dtype(dtype: str) -> bool:
     return norm in COMPLEX_TYPES
 
 
-def get_default_checks_for_dtype(dtype: str) -> list:
+def get_default_checks_for_dtype(dtype: str, column_name: str = None) -> list:
     """Return the default-selected checks for a given data type."""
     if is_complex_dtype(dtype):
-        return list(COMPLEX_CHECK_DEFAULTS)
-    dtype_upper = (dtype or "").upper().split("(")[0].strip()
-    return COLUMN_CHECK_DEFAULTS.get(
+        defaults = list(COMPLEX_CHECK_DEFAULTS)
+    else:
+        dtype_upper = (dtype or "").upper().split("(")[0].strip()
+        defaults = COLUMN_CHECK_DEFAULTS.get(
         dtype_upper, COLUMN_CHECK_DEFAULTS["DEFAULT"]
-    )
+        )
+
+    allowed = set(get_available_checks_for_dtype(dtype, column_name))
+    return [c for c in defaults if c in allowed]
 
 
-def get_available_checks_for_dtype(dtype: str) -> list:
+def get_available_checks_for_dtype(dtype: str, column_name: str = None) -> list:
     """Return the full list of available checks for a column type."""
     if is_complex_dtype(dtype):
-        return list(COMPLEX_CHECK_DEFAULTS)
-    return COLUMN_LEVEL_VALIDATIONS
+        return list(COLUMN_CHECKS_BY_TYPE["COMPLEX"])
+
+    base = normalize_dtype(dtype)
+    family = TYPE_FAMILY.get(base, "DEFAULT")
+    allowed = list(COLUMN_CHECKS_BY_TYPE.get(
+        family,
+        COLUMN_CHECKS_BY_TYPE["DEFAULT"],
+    ))
+
+    if column_name and _re.search(ID_NAME_REGEX, _rule_name_segment(column_name)):
+        allowed = [c for c in ID_COLUMN_CHECKS if c in COLUMN_LEVEL_VALIDATIONS]
+
+    return list(allowed)
 
 
 def normalize_dtype(dtype: str) -> str:
@@ -172,6 +191,16 @@ def normalize_dtype(dtype: str) -> str:
     if base in COMPLEX_TYPES:
         return base
     return norm
+
+
+def _rule_name_segment(path: str) -> str:
+    parts = normalize_path(path).split(".")
+    if not parts:
+        return ""
+    last = parts[-1]
+    if last == "items" and len(parts) > 1:
+        return parts[-2]
+    return last
 
 
 # ── Nested / complex column explosion ──────────────────────────────────────
@@ -781,10 +810,10 @@ def _step2_col_row(cname: str, dtype: str, existing: dict,
                    type_label: str = None):
     norm_dt   = normalize_dtype(dtype)
     is_cplx   = is_complex_dtype(dtype)
-    available = get_available_checks_for_dtype(dtype)
+    available = get_available_checks_for_dtype(dtype, cname)
     # Complex parents with nested fields start OFF (collapsed)
     enabled   = existing.get("enabled", not bool(n_children))
-    checks    = existing.get("checks", get_default_checks_for_dtype(dtype))
+    checks    = existing.get("checks", get_default_checks_for_dtype(dtype, cname))
     extra     = id_extra or {}
 
     def _id(kind):
@@ -3117,7 +3146,7 @@ def next_step1(
                 "nullable"       : True,
                 "enabled"        : _type_base(dtype) not in ("STRUCT", "ARRAY"),
                 "is_complex"     : is_complex_dtype(dtype),
-                "checks"         : get_default_checks_for_dtype(dtype),
+                "checks"         : get_default_checks_for_dtype(dtype, cname),
                 "warn_threshold" : 5,
                 "crit_threshold" : 10,
             }
@@ -3133,7 +3162,7 @@ def next_step1(
                         "is_complex"     : is_complex_dtype(leaf["dtype"]),
                         "is_nested_child": True,
                         "parent_column"  : cname,
-                        "checks"         : get_default_checks_for_dtype(leaf["dtype"]),
+                        "checks"         : get_default_checks_for_dtype(leaf["dtype"], leaf["path"]),
                         "warn_threshold" : 5,
                         "crit_threshold" : 10,
                     }
@@ -3192,7 +3221,10 @@ def next_step2(
             if cname not in new_col:
                 continue
             new_col[cname]["enabled"] = bool(en[i]) if i < len(en) else True
-            new_col[cname]["checks"] = (ch[i] if i < len(ch) else []) or []
+            selected = (ch[i] if i < len(ch) else []) or []
+            dtype = new_col[cname].get("dtype", "STRING")
+            allowed = set(get_available_checks_for_dtype(dtype, cname))
+            new_col[cname]["checks"] = [c for c in selected if c in allowed]
             new_col[cname]["warn_threshold"] = wa[i] if i < len(wa) else 5
             new_col[cname]["crit_threshold"] = cr[i] if i < len(cr) else 10
 
