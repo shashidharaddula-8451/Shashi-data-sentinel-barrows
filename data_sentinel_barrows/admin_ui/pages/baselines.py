@@ -113,11 +113,16 @@ def load_baselines(n_clicks, fqn):
         for _, r in df.iterrows():
             status = str(r.get("baseline_status", "") or "")
             rows.append({
+                "baseline_version_id": str(r.get("baseline_version_id", "") or "—"),
                 "column_name"       : str(r.get("column_name", "") or "—"),
                 "check_type"        : str(r.get("check_type", "") or "—"),
                 "metric_name"       : str(r.get("metric_name", "") or "—"),
                 "baseline_date"     : str(r.get("baseline_date", "") or "—"),
                 "baseline_window_days": str(r.get("baseline_window_days", "") or "—"),
+                "window_start"      : str(r.get("window_start", "") or "—"),
+                "window_end"        : str(r.get("window_end", "") or "—"),
+                "effective_date"    : str(r.get("effective_date", "") or "—"),
+                "run_mode"          : str(r.get("run_mode", "") or "—"),
                 "mean_value"        : fmt_number(r.get("mean_value")),
                 "stddev_value"      : fmt_number(r.get("stddev_value")),
                 "min_value"         : fmt_number(r.get("min_value")),
@@ -137,11 +142,16 @@ def load_baselines(n_clicks, fqn):
                 grid_id="baselines-grid",
                 row_data=rows,
                 col_defs=[
+                    {"field": "baseline_version_id", "headerName": "Baseline Version", "minWidth": 170},
+                    {"field": "effective_date",     "headerName": "Effective",        "minWidth": 120},
+                    {"field": "run_mode",           "headerName": "Run Mode",         "minWidth": 110},
                     {"field": "column_name",        "headerName": "Column",        "flex": 2, "minWidth": 220},
                     {"field": "check_type",         "headerName": "Check Type", "minWidth": 200},
                     {"field": "metric_name",        "headerName": "Metric",        "flex": 2, "minWidth": 220},
                     {"field": "baseline_date",      "headerName": "Baseline Date", "minWidth": 120},
                     {"field": "baseline_window_days","headerName": "Window",        "width": 90},
+                    {"field": "window_start",       "headerName": "Window Start",    "minWidth": 120},
+                    {"field": "window_end",         "headerName": "Window End",      "minWidth": 120},
                     {"field": "mean_value",         "headerName": "Mean",          "width": 110},
                     {"field": "stddev_value",       "headerName": "Std Dev",       "width": 110},
                     {"field": "min_value",          "headerName": "Min",           "width": 110},

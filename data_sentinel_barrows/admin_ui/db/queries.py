@@ -356,11 +356,16 @@ def get_baselines_for_table(fully_qualified_name: str):
     query = f"""
         SELECT
             baseline_id,
+            baseline_version_id,
             column_name,
             check_type,
             metric_name,
             baseline_date,
             baseline_window_days,
+            window_start,
+            window_end,
+            effective_date,
+            run_mode,
             mean_value,
             stddev_value,
             min_value,
@@ -376,7 +381,8 @@ def get_baselines_for_table(fully_qualified_name: str):
             computed_by
         FROM {BASELINE_METRICS}
         WHERE fully_qualified_name = :fully_qualified_name
-        ORDER BY baseline_date DESC, column_name, check_type
+                    AND baseline_version_id IS NOT NULL
+                ORDER BY effective_date DESC, baseline_date DESC, column_name, check_type
     """
     return query, {"fully_qualified_name": fully_qualified_name}
 

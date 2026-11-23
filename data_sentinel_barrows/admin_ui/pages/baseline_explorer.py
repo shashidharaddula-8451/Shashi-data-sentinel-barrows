@@ -233,6 +233,7 @@ def load_tables_with_baselines(agent: str) -> list:
                 )               AS table_short,
                 COUNT(*)        AS baseline_count
             FROM {A1_BASELINES}
+            WHERE baseline_version_id IS NOT NULL
             GROUP BY fully_qualified_name
             ORDER BY fully_qualified_name
         """
@@ -262,12 +263,17 @@ def load_baselines_for_table(fqn: str, agent: str) -> list:
             query = f"""
                 SELECT
                     baseline_id,
+                    baseline_version_id,
                     fully_qualified_name,
                     column_name,
                     check_type,
                     metric_name,
                     baseline_date,
                     baseline_window_days,
+                    window_start,
+                    window_end,
+                    effective_date,
+                    run_mode,
                     ROUND(mean_value, 6)    AS mean_value,
                     ROUND(stddev_value, 6)  AS stddev_value,
                     ROUND(min_value, 6)     AS min_value,
@@ -280,6 +286,7 @@ def load_baselines_for_table(fqn: str, agent: str) -> list:
                     baseline_status
                 FROM {A1_BASELINES}
                 WHERE fully_qualified_name = :fqn
+                                    AND baseline_version_id IS NOT NULL
                 ORDER BY check_type, column_name
             """
         else:
@@ -768,6 +775,11 @@ def load_baseline_list(selected_fqn, agent):
         column_name = b.get("column_name", "")
         status      = b.get("baseline_status", "")
         mean_val    = b.get("mean_value")
+        version_id  = b.get("baseline_version_id")
+        window_start = str(b.get("window_start") or "")[:10]
+        window_end = str(b.get("window_end") or "")[:10]
+        run_mode = str(b.get("run_mode") or "—")
+        effective = str(b.get("effective_date") or "")[:10]
 
         status_emoji = "✅" if status == "VALID" else "⚠️"
         label = (
@@ -787,7 +799,10 @@ def load_baseline_list(selected_fqn, agent):
                     }
                 ),
                 html.Span(
-                    f"Mean: {fmt_number(mean_val)}",
+                    (
+                        f"Version: {version_id} | {window_start} to {window_end} | "
+                        f"effective {effective} | mode {run_mode} | mean {fmt_number(mean_val)}"
+                    ),
                     style={
                         "color"   : "#aaaaaa",
                         "fontSize": "11px"
@@ -861,6 +876,11 @@ def render_chart(selected_idx, baselines_store, selected_fqn,
     status      = baseline.get("baseline_status", "")
     b_date      = baseline.get("baseline_date", "")
     window      = baseline.get("baseline_window_days", 30)
+    version_id  = baseline.get("baseline_version_id", "—")
+    run_mode    = baseline.get("run_mode", "—")
+    effective   = baseline.get("effective_date", "—")
+    window_start = baseline.get("window_start", "—")
+    window_end = baseline.get("window_end", "—")
 
     table_short  = selected_fqn.split(".")[-1]
     metric_label = METRIC_LABEL.get(check_type, "Value")
@@ -965,7 +985,9 @@ def render_chart(selected_idx, baselines_store, selected_fqn,
                     html.Small(
                         f"{table_short}  ·  {metric_label}  ·  "
                         f"{samples} samples  ·  {window}-day window  ·  "
-                        f"Baseline: {str(b_date)[:10]}",
+                        f"Baseline: {str(b_date)[:10]}  ·  version {version_id}  ·  "
+                        f"effective {str(effective)[:10]}  ·  mode {run_mode}  ·  "
+                        f"{str(window_start)[:10]} to {str(window_end)[:10]}",
                         style={"color": "#aaaaaa"}
                     )
                 ], md=8),

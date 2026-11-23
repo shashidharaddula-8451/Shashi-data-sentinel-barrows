@@ -25,6 +25,20 @@ from components.alerts import success_alert, error_alert, ag_grid_props
 
 logger = logging.getLogger(__name__)
 
+COMING_SOON_VALIDATIONS = {
+    "FORMAT_PATTERN",
+    "DISTRIBUTION_DRIFT",
+    "DATE_VALIDITY",
+    "REFERENTIAL_INTEGRITY",
+    "DUPLICATE_CHECK",
+}
+
+
+def _validation_option(code: str) -> dict:
+    coming_soon = code in COMING_SOON_VALIDATIONS
+    label = f"{code} (Coming soon)" if coming_soon else code
+    return {"label": label, "value": code, "disabled": coming_soon}
+
 dash.register_page(__name__, path="/validations", name="Validations")
 
 layout = dbc.Container([
@@ -99,7 +113,7 @@ layout = dbc.Container([
                                 dcc.Dropdown(
                                     id="table-val-name-dropdown",
                                     options=[
-                                        {"label": v, "value": v}
+                                        _validation_option(v)
                                         for v in TABLE_LEVEL_VALIDATIONS
                                     ],
                                     placeholder="Select validation...",
@@ -211,7 +225,7 @@ layout = dbc.Container([
                                 dcc.Dropdown(
                                     id="col-val-name-dropdown",
                                     options=[
-                                        {"label": v, "value": v}
+                                        _validation_option(v)
                                         for v in COLUMN_LEVEL_VALIDATIONS
                                     ],
                                     placeholder="Select validation...",
@@ -389,6 +403,9 @@ def add_table_validation(
             "Table, Validation, Warning Threshold, Critical Threshold, Unit, Created By."
         ), []
 
+    if val_name in COMING_SOON_VALIDATIONS:
+        return error_alert(f"{val_name} is coming soon and is currently disabled."), []
+
     if params:
         try:
             json.loads(params)
@@ -446,6 +463,9 @@ def add_column_validation(
             "Please fill in all required fields: "
             "Table, Column, Validation, Warning Threshold, Critical Threshold, Unit, Created By."
         ), []
+
+    if val_name in COMING_SOON_VALIDATIONS:
+        return error_alert(f"{val_name} is coming soon and is currently disabled."), []
 
     if params:
         try:

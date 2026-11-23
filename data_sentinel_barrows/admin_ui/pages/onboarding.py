@@ -4,6 +4,11 @@ import dash
 from dash import dcc, html, Input, Output, State, callback, ALL, MATCH, ctx
 import dash_bootstrap_components as dbc
 from db.connection import execute_query, execute_write, validate_identifier, get_connection
+import json
+import os
+import requests
+import time
+from databricks.sdk import WorkspaceClient
 from config.settings import (
     TARGET_CATALOG, TARGET_SCHEMA,
     COLUMN_LEVEL_VALIDATIONS,
@@ -66,7 +71,7 @@ STEPS = [
     {"num": 1, "label": "Table Details"},
     {"num": 2, "label": "Column Config"},
     {"num": 3, "label": "Table Checks"},
-    {"num": 4, "label": "Baseline Window"},
+    {"num": 4, "label": "Baseline Options"},
     {"num": 5, "label": "Review & Confirm"},
 ]
 
@@ -100,6 +105,32 @@ _NO_DATE_COL_OPTION = {
     "label": "— No date column (use full table)",
     "value": _NO_DATE_COL_VALUE,
 }
+
+DATE_TYPES = {
+    "DATE", "TIMESTAMP", "TIMESTAMP_NTZ", "DATETIME", "TIMESTAMP_LTZ"
+}
+
+DATE_NAME_HINTS = {
+    "date", "created", "updated", "modified", "timestamp",
+    "created_at", "updated_at", "event_time", "event_date",
+    "load_date", "inserted_dt", "business_date", "run_date",
+    "partition_date", "record_date", "file_date", "transaction_date",
+    "start", "end", "__start_at", "__end_at", "_commit_timestamp",
+}
+
+DATE_PRIORITY = [
+    "business_date", "inserted_dt", "updated_dt", "created", "updated",
+    "created_at", "updated_at", "transaction_date", "event_date",
+    "load_date", "created_date", "modified_date", "run_date",
+    "partition_date", "record_date", "file_date", "__start_at",
+]
+
+DATE_PARSE_MIN_RATIO = 0.80
+DATE_NULL_MAX_RATIO = 0.50
+
+DATE_LLM_ENDPOINT = os.environ.get("DS_DATE_SUGGESTION_ENDPOINT", "databricks-gpt-oss-20b").strip()
+DATE_LLM_TIMEOUT_SECONDS = int(os.environ.get("DS_DATE_SUGGESTION_TIMEOUT", "45"))
+DATE_SAMPLE_LIMIT = int(os.environ.get("DS_DATE_SUGGESTION_SAMPLES", "12"))
 
 TABLE_CHECK_TYPES = [
     {
@@ -143,6 +174,23 @@ TABLE_CHECK_TYPES = [
         "crit"       : 5,
     },
 ]
+
+COMING_SOON_CHECKS = {
+    "FORMAT_PATTERN",
+    "DISTRIBUTION_DRIFT",
+    "DATE_VALIDITY",
+    "REFERENTIAL_INTEGRITY",
+    "DUPLICATE_CHECK",
+}
+
+BASELINE_MODE_LAST30 = "LAST_30_COMPLETE_DAYS"
+BASELINE_MODE_CUSTOM = "CUSTOM_DATES"
+DEFAULT_BASELINE_LAG_DAYS = 1
+DEFAULT_VALIDATION_LAG_DAYS = 1
+
+DS_AGENT1_JOB_ID = os.environ.get("DS_AGENT1_JOB_ID", "").strip()
+JOB_POLL_INTERVAL_SECONDS = 10
+JOB_POLL_TIMEOUT_SECONDS = 300
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -275,9 +323,7 @@ def _struct_fields(t: str):
 from components.nested_columns import (  # noqa: E402
     flatten_nested_type,
     is_nested_path,
-    nested_sql_source,
     normalize_path,
-    path_root,
     schema_tree,
 )
 
@@ -288,6 +334,392 @@ def _find_col(df, candidates, fallback_idx=0):
         if candidate.lower() in cols_lower:
             return cols_lower[candidate.lower()]
     return df.columns[fallback_idx]
+
+
+def _date_name_bonus(column_name: str) -> float:
+    lname = (column_name or "").lower()
+    for i, hint in enumerate(DATE_PRIORITY):
+        if lname == hint:
+            # Earlier in DATE_PRIORITY gets higher bonus.
+            return max(0.0, 8.0 - (i * 0.4))
+    if lname in DATE_NAME_HINTS:
+        return 3.0
+    return 0.0
+
+
+def _date_sample_values(fqn: str, column_name: str, sample_limit: int = DATE_SAMPLE_LIMIT) -> list:
+    try:
+        df = execute_query(
+            f"""
+            SELECT CAST(parsed_dt AS STRING) AS dt
+            FROM (
+                SELECT TRY_CAST(`{column_name}` AS DATE) AS parsed_dt
+                FROM {fqn}
+                WHERE `{column_name}` IS NOT NULL
+            ) s
+            WHERE parsed_dt IS NOT NULL
+            GROUP BY parsed_dt
+            ORDER BY parsed_dt DESC
+            LIMIT :sample_limit
+            """,
+            {"sample_limit": int(max(1, sample_limit))},
+        )
+        if df.empty:
+            return []
+        return [str(v)[:10] for v in df["dt"].dropna().astype(str).tolist()]
+    except Exception as e:
+        logger.warning(f"Date sample extraction failed for {column_name}: {e}")
+        return []
+
+
+def _profile_date_candidate(fqn: str, column_name: str, dtype_norm: str) -> dict:
+    expr = f"TRY_CAST(`{column_name}` AS DATE)"
+    df = execute_query(
+        f"""
+        SELECT
+            COUNT(*) AS total_rows,
+            SUM(CASE WHEN `{column_name}` IS NULL THEN 1 ELSE 0 END) AS null_rows,
+            SUM(CASE WHEN {expr} IS NOT NULL THEN 1 ELSE 0 END) AS parseable_rows,
+            COUNT(DISTINCT {expr}) AS distinct_days,
+            MIN({expr}) AS min_date,
+            MAX({expr}) AS max_date
+        FROM {fqn}
+        """
+    )
+
+    if df.empty:
+        return {
+            "column_name": column_name,
+            "dtype": dtype_norm,
+            "total_rows": 0,
+            "null_ratio": 1.0,
+            "parse_ratio": 0.0,
+            "distinct_days": 0,
+            "score": 0.0,
+            "reasons": ["No rows available for profiling."],
+        }
+
+    r = df.iloc[0]
+    total_rows = int(r.get("total_rows") or 0)
+    null_rows = int(r.get("null_rows") or 0)
+    parseable_rows = int(r.get("parseable_rows") or 0)
+    distinct_days = int(r.get("distinct_days") or 0)
+
+    null_ratio = (null_rows / total_rows) if total_rows else 1.0
+    parse_ratio = (parseable_rows / total_rows) if total_rows else 0.0
+
+    score = (
+        parse_ratio * 70.0
+        + (1.0 - min(1.0, null_ratio)) * 20.0
+        + min(1.0, (distinct_days / 365.0)) * 10.0
+        + _date_name_bonus(column_name)
+    )
+
+    reasons = []
+    if parse_ratio < DATE_PARSE_MIN_RATIO:
+        reasons.append(
+            f"Low date parseability ({parse_ratio * 100:.1f}% parse as DATE)."
+        )
+    if null_ratio > DATE_NULL_MAX_RATIO:
+        reasons.append(
+            f"High null ratio ({null_ratio * 100:.1f}% null values)."
+        )
+    if distinct_days < 7:
+        reasons.append(
+            "Low day coverage (< 7 distinct days), weak for baseline windows."
+        )
+    if dtype_norm == "STRING" and parse_ratio < 1.0:
+        reasons.append(
+            "STRING date values may have inconsistent formats."
+        )
+
+    return {
+        "column_name": column_name,
+        "dtype": dtype_norm,
+        "total_rows": total_rows,
+        "null_ratio": null_ratio,
+        "parse_ratio": parse_ratio,
+        "distinct_days": distinct_days,
+        "min_date": str(r.get("min_date") or ""),
+        "max_date": str(r.get("max_date") or ""),
+        "sample_dates": _date_sample_values(fqn, column_name),
+        "score": score,
+        "reasons": reasons,
+    }
+
+
+def _recommend_date_column(fqn: str, date_candidates: list) -> tuple:
+    profiles = []
+    for cand in date_candidates:
+        try:
+            profiles.append(
+                _profile_date_candidate(fqn, cand["name"], cand["dtype"])
+            )
+        except Exception as e:
+            logger.warning(
+                f"Date candidate profiling failed for {cand['name']} in {fqn}: {e}"
+            )
+            profiles.append({
+                "column_name": cand["name"],
+                "dtype": cand["dtype"],
+                "total_rows": 0,
+                "null_ratio": 1.0,
+                "parse_ratio": 0.0,
+                "distinct_days": 0,
+                "score": 0.0,
+                "reasons": ["Profiling failed; unable to verify date quality."],
+            })
+
+    profiles = sorted(profiles, key=lambda x: x.get("score", 0.0), reverse=True)
+    recommended = profiles[0]["column_name"] if profiles else None
+    return recommended, profiles
+
+
+def _extract_model_content(response_data: dict) -> str:
+    choices = response_data.get("choices", []) if isinstance(response_data, dict) else []
+    if not choices:
+        return ""
+    message = choices[0].get("message", {})
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "")
+                if text:
+                    text_parts.append(text)
+        if text_parts:
+            return " ".join(text_parts)
+    return choices[0].get("text", "")
+
+
+def _parse_json_from_text(content: str) -> dict:
+    txt = (content or "").strip()
+    if not txt:
+        return {}
+    if "```json" in txt:
+        txt = txt.split("```json", 1)[1]
+        if "```" in txt:
+            txt = txt.split("```", 1)[0]
+    elif "```" in txt:
+        parts = txt.split("```")
+        if len(parts) >= 2:
+            txt = parts[1]
+    txt = txt.strip()
+    s = txt.find("{")
+    e = txt.rfind("}") + 1
+    if s == -1 or e <= s:
+        return {}
+    try:
+        return json.loads(txt[s:e])
+    except Exception:
+        return {}
+
+
+def _llm_date_recommendation(fqn: str, profiles: list) -> dict:
+    if not profiles:
+        return {
+            "used": False,
+            "reason": "no_profiles",
+        }
+
+    workspace_host = (os.environ.get("DATABRICKS_HOST", "") or "").replace("https://", "")
+    workspace_token = os.environ.get("DATABRICKS_TOKEN", "") or ""
+    if not workspace_host or not workspace_token or not DATE_LLM_ENDPOINT:
+        return {
+            "used": False,
+            "reason": "missing_llm_env",
+        }
+
+    profile_payload = []
+    for p in profiles[:12]:
+        profile_payload.append({
+            "column_name": p.get("column_name"),
+            "dtype": p.get("dtype"),
+            "score": round(float(p.get("score", 0.0)), 3),
+            "parse_ratio": round(float(p.get("parse_ratio", 0.0)), 4),
+            "null_ratio": round(float(p.get("null_ratio", 1.0)), 4),
+            "distinct_days": int(p.get("distinct_days", 0) or 0),
+            "min_date": str(p.get("min_date") or ""),
+            "max_date": str(p.get("max_date") or ""),
+            "sample_dates": p.get("sample_dates", [])[:DATE_SAMPLE_LIMIT],
+            "quality_notes": p.get("reasons", []),
+        })
+
+    prompt = (
+        "Select the single best business date column for data-quality baselining and validation windows. "
+        "Use evidence from full-table aggregates and sample parsed dates. "
+        "Respond with strict JSON only: "
+        "{\"recommended_column\":\"...\",\"confidence\":\"high|medium|low\","
+        "\"explanation\":\"...\",\"warnings\":\"...\"}.\n"
+        f"Table: {fqn}\n"
+        f"Candidate profiles: {json.dumps(profile_payload, ensure_ascii=True)}"
+    )
+
+    try:
+        model_url = f"https://{workspace_host}/serving-endpoints/{DATE_LLM_ENDPOINT}/invocations"
+        headers = {
+            "Authorization": f"Bearer {workspace_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a data engineering assistant. Recommend the best business date column. "
+                        "Do not include markdown. Return JSON object only."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+            "max_tokens": 400,
+            "temperature": 0.0,
+        }
+
+        response = requests.post(
+            model_url,
+            headers=headers,
+            json=payload,
+            timeout=DATE_LLM_TIMEOUT_SECONDS,
+        )
+        if response.status_code != 200:
+            return {
+                "used": False,
+                "reason": f"http_{response.status_code}",
+            }
+
+        raw_content = _extract_model_content(response.json())
+        parsed = _parse_json_from_text(raw_content)
+        rec = str(parsed.get("recommended_column") or "").strip()
+        valid_columns = {p.get("column_name") for p in profiles}
+        if rec not in valid_columns:
+            return {
+                "used": False,
+                "reason": "invalid_recommendation",
+                "raw_recommendation": rec,
+            }
+
+        return {
+            "used": True,
+            "recommended_column": rec,
+            "confidence": str(parsed.get("confidence") or "").strip() or "medium",
+            "explanation": str(parsed.get("explanation") or "").strip(),
+            "warnings": str(parsed.get("warnings") or "").strip(),
+        }
+    except Exception as e:
+        logger.warning(f"LLM date recommendation failed for {fqn}: {e}")
+        return {
+            "used": False,
+            "reason": "exception",
+        }
+
+
+def _date_disclaimer_block(selected_col: str, analysis):
+    if isinstance(analysis, list):
+        analysis = {
+            "profiles": analysis,
+            "recommended_column": analysis[0].get("column_name") if analysis else None,
+            "recommended_source": "rule",
+            "llm": {"used": False},
+        }
+
+    profiles = (analysis or {}).get("profiles", [])
+    llm = (analysis or {}).get("llm", {})
+    recommended_column = (analysis or {}).get("recommended_column")
+    recommended_source = (analysis or {}).get("recommended_source", "rule")
+
+    if not profiles:
+        return html.Div()
+
+    profile_map = {p["column_name"]: p for p in profiles}
+    selected = profile_map.get(selected_col) if selected_col else None
+    if selected_col == _NO_DATE_COL_VALUE:
+        top = profiles[0]
+        return dbc.Alert(
+            [
+                html.Strong("Selection warning: "),
+                (
+                    f"A likely business date column exists ({top['column_name']}) "
+                    "but 'No date column' is selected. This may degrade baseline quality."
+                ),
+                html.Br(),
+                html.Small(
+                    "Privacy note: recommendation uses full-table aggregate metrics "
+                    "plus controlled date-value samples for the internal LLM. "
+                    "No raw non-date values or PII are stored by this UI.",
+                    style=MUTED_STYLE,
+                ),
+            ],
+            color="warning",
+            className="mt-2",
+        )
+
+    issues = []
+    if selected:
+        issues.extend(selected.get("reasons", []))
+
+    info_bits = []
+    if recommended_source == "llm" and llm.get("used"):
+        conf = llm.get("confidence", "medium")
+        expl = llm.get("explanation", "")
+        warn = llm.get("warnings", "")
+        info_bits.append(f"Internal LLM confidence: {conf}.")
+        if expl:
+            info_bits.append(f"LLM rationale: {expl}")
+        if warn:
+            issues.append(f"LLM caution: {warn}")
+
+    if selected_col and recommended_column and selected_col != recommended_column and selected_col != _NO_DATE_COL_VALUE:
+        issues.insert(
+            0,
+            f"Selected column differs from recommended column '{recommended_column}'.",
+        )
+
+    if issues:
+        return dbc.Alert(
+            [
+                html.Strong(f"Date column caution for '{selected_col}': "),
+                html.Ul([html.Li(i) for i in issues]),
+                html.Div([html.Small(x, style=MUTED_STYLE) for x in info_bits]),
+                html.Small(
+                    "Suggestion quality is computed from full-table aggregate metrics. "
+                    "The internal LLM sees only controlled date-context payloads; "
+                    "no row-level non-date values are persisted.",
+                    style=MUTED_STYLE,
+                ),
+            ],
+            color="warning",
+            className="mt-2",
+        )
+
+    return dbc.Alert(
+        [
+            html.Strong(f"'{selected_col}' looks suitable as business date column."),
+            html.Br(),
+            html.Small(
+                (
+                    "Recommendation source: internal LLM. "
+                    if recommended_source == "llm" and llm.get("used")
+                    else "Recommendation source: deterministic profiling fallback. "
+                ),
+                style=MUTED_STYLE,
+            ),
+            html.Br(),
+            html.Small(
+                "Validated using full-table aggregate metrics with controlled date-context only; "
+                "raw non-date values are not stored.",
+                style=MUTED_STYLE,
+            ),
+        ],
+        color="success",
+        className="mt-2",
+    )
 
 
 # ── Progress bar ───────────────────────────────────────────────────────────
@@ -449,7 +881,11 @@ def layout():
         dcc.Store(id="ob-table-meta",   data={}),
         dcc.Store(id="ob-col-config",   data={}),
         dcc.Store(id="ob-table-checks", data={}),
+        dcc.Store(id="ob-date-col-analysis", data={}),
         dcc.Store(id="ob-baseline",     data={}),
+        dcc.Store(id="ob-baseline-mode", data=BASELINE_MODE_LAST30),
+        dcc.Store(id="ob-baseline-lag-days", data=DEFAULT_BASELINE_LAG_DAYS),
+        dcc.Store(id="ob-validation-lag-days", data=DEFAULT_VALIDATION_LAG_DAYS),
         dcc.Store(id="ob-existing",     data={}),
         dcc.Store(id="ob-exec-status",  data={}),
 
@@ -733,11 +1169,12 @@ def build_step1(prefill: dict = None) -> html.Div:
                     ),
                     html.Small(
                         "Date/timestamp column for baseline window. "
-                        "Also detects date-like STRING columns. "
+                        "Also detects date-like STRING columns with full-table aggregate profiling. "
                         "Choose 'No date column' to baseline "
                         "over the full table.",
                         style=MUTED_STYLE
                     ),
+                    html.Div(id="ob-date-col-disclaimer"),
                 ], md=6),
                 dbc.Col([
                     html.Label("Owner Email", style=LABEL_STYLE),
@@ -790,7 +1227,12 @@ _CHECK_SHORT_LABELS = {
 
 
 def _check_label(code: str) -> str:
-    return _CHECK_SHORT_LABELS.get(code, code.replace("_", " ").title())
+    base = _CHECK_SHORT_LABELS.get(code, code.replace("_", " ").title())
+    return f"{base} (Coming soon)" if code in COMING_SOON_CHECKS else base
+
+
+def _is_check_enabled_for_selection(code: str) -> bool:
+    return code not in COMING_SOON_CHECKS
 
 
 def _lineage_label(path: str):
@@ -813,7 +1255,10 @@ def _step2_col_row(cname: str, dtype: str, existing: dict,
     available = get_available_checks_for_dtype(dtype, cname)
     # Complex parents with nested fields start OFF (collapsed)
     enabled   = existing.get("enabled", not bool(n_children))
-    checks    = existing.get("checks", get_default_checks_for_dtype(dtype, cname))
+    checks    = [
+        c for c in existing.get("checks", get_default_checks_for_dtype(dtype, cname))
+        if _is_check_enabled_for_selection(c)
+    ]
     extra     = id_extra or {}
 
     def _id(kind):
@@ -870,9 +1315,19 @@ def _step2_col_row(cname: str, dtype: str, existing: dict,
             dbc.Col(
                 dcc.Dropdown(
                     id          = _id("checks"),
-                    options     = [{"label": _check_label(c), "value": c,
-                                    "title": c} for c in available],
-                    value       = [c for c in checks if c in available],
+                    options     = [
+                        {
+                            "label": _check_label(c),
+                            "value": c,
+                            "title": c,
+                            "disabled": not _is_check_enabled_for_selection(c),
+                        }
+                        for c in available
+                    ],
+                    value       = [
+                        c for c in checks
+                        if c in available and _is_check_enabled_for_selection(c)
+                    ],
                     multi       = True,
                     disabled    = not enabled,
                     placeholder = "Select check types…",
@@ -1114,10 +1569,12 @@ def build_step3(prefill: dict = None) -> html.Div:
     for chk in TABLE_CHECK_TYPES:
         chk_id   = chk["id"]
         existing = p.get(chk_id, {})
-        enabled  = existing.get("enabled", chk["default_on"])
+        selectable = _is_check_enabled_for_selection(chk_id)
+        enabled  = existing.get("enabled", chk["default_on"]) and selectable
         warn_val = existing.get("warn",    chk["warn"])
         crit_val = existing.get("crit",    chk["crit"])
         has_thr  = chk["warn"] is not None
+        label = chk["label"] if selectable else f"{chk['label']} (Coming soon)"
 
         check_rows.append(
             html.Div([
@@ -1127,11 +1584,12 @@ def build_step3(prefill: dict = None) -> html.Div:
                             id    = {"type": "ob-tbl-check-enabled",
                                      "index": chk_id},
                             value = enabled,
+                            disabled = not selectable,
                         ),
                     ], md=1),
                     dbc.Col([
                         html.Div(
-                            chk["label"],
+                            label,
                             style={"fontWeight": "600",
                                    "color"     : TEXT_PRIMARY,
                                    "fontSize"  : "14px"}
@@ -1234,23 +1692,28 @@ def build_step3(prefill: dict = None) -> html.Div:
 
 def build_step4(prefill: dict = None) -> html.Div:
     p        = prefill or {}
-    end_dt   = date.today() - timedelta(days=1)
-    start_dt = end_dt - timedelta(days=29)
+    baseline_mode = p.get("baseline_mode", BASELINE_MODE_LAST30)
+    baseline_lag_days = int(p.get("baseline_lag_days", DEFAULT_BASELINE_LAG_DAYS) or DEFAULT_BASELINE_LAG_DAYS)
+    validation_lag_days = int(p.get("validation_lag_days", DEFAULT_VALIDATION_LAG_DAYS) or DEFAULT_VALIDATION_LAG_DAYS)
 
-    start_val = p.get("window_start", str(start_dt))
-    end_val   = p.get("window_end",   str(end_dt))
+    auto_end_dt = date.today() - timedelta(days=max(0, baseline_lag_days))
+    auto_start_dt = auto_end_dt - timedelta(days=29)
+
+    start_val = p.get("window_start", str(auto_start_dt))
+    end_val   = p.get("window_end",   str(auto_end_dt))
     recompute = p.get("recompute_checked", ["recompute"])
+    custom_disabled = baseline_mode != BASELINE_MODE_CUSTOM
 
     return html.Div([
         html.Div([
             html.H4(
-                "Step 4 — Baseline Window",
+                "Step 4 — Baseline Options",
                 style={"color": TEXT_HEADING, "fontWeight": "700",
                        "marginBottom": "4px"}
             ),
             html.P(
-                "Define the clean historical window used to compute "
-                "statistical baselines for anomaly detection.",
+                "Choose how baseline windows are derived and save lag-day settings "
+                "used for baseline/validation scheduling.",
                 style=MUTED_STYLE
             ),
         ], style={"marginBottom": "24px"}),
@@ -1258,10 +1721,72 @@ def build_step4(prefill: dict = None) -> html.Div:
         html.Div([
             dbc.Row([
                 dbc.Col([
+                    html.Label("Window Option", style=LABEL_STYLE),
+                    dbc.RadioItems(
+                        id="ob-baseline-mode-visible",
+                        options=[
+                            {
+                                "label": "Option A — Last 30 complete days (from lag)",
+                                "value": BASELINE_MODE_LAST30,
+                            },
+                            {
+                                "label": "Option B — Custom date range",
+                                "value": BASELINE_MODE_CUSTOM,
+                            },
+                        ],
+                        value=baseline_mode,
+                        className="mb-2",
+                        style={"color": TEXT_PRIMARY},
+                    ),
+                    html.Small(
+                        f"Option A computes {auto_start_dt} to {auto_end_dt} from baseline lag days.",
+                        style=MUTED_STYLE,
+                    ),
+                ], md=12),
+            ], className="mb-3"),
+
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Baseline Lag Days", style=LABEL_STYLE),
+                    dbc.Input(
+                        id="ob-baseline-lag-visible",
+                        value=baseline_lag_days,
+                        type="number",
+                        min=0,
+                        step=1,
+                        style={
+                            "backgroundColor": "#2C2E33",
+                            "color": TEXT_PRIMARY,
+                            "border": f"1px solid {BORDER_COLOR}",
+                        },
+                    ),
+                    html.Small("Defaults to 1 day.", style=MUTED_STYLE),
+                ], md=6),
+                dbc.Col([
+                    html.Label("Validation Lag Days", style=LABEL_STYLE),
+                    dbc.Input(
+                        id="ob-validation-lag-visible",
+                        value=validation_lag_days,
+                        type="number",
+                        min=0,
+                        step=1,
+                        style={
+                            "backgroundColor": "#2C2E33",
+                            "color": TEXT_PRIMARY,
+                            "border": f"1px solid {BORDER_COLOR}",
+                        },
+                    ),
+                    html.Small("Defaults to 1 day.", style=MUTED_STYLE),
+                ], md=6),
+            ], className="mb-4"),
+
+            dbc.Row([
+                dbc.Col([
                     html.Label("Baseline Start Date", style=LABEL_STYLE),
                     dcc.DatePickerSingle(
                         id             = "ob-baseline-start-visible",
                         date           = start_val,
+                        disabled       = custom_disabled,
                         display_format = "YYYY-MM-DD",
                         style          = {"width": "100%"},
                     ),
@@ -1271,6 +1796,7 @@ def build_step4(prefill: dict = None) -> html.Div:
                     dcc.DatePickerSingle(
                         id             = "ob-baseline-end-visible",
                         date           = end_val,
+                        disabled       = custom_disabled,
                         display_format = "YYYY-MM-DD",
                         style          = {"width": "100%"},
                     ),
@@ -1294,8 +1820,7 @@ def build_step4(prefill: dict = None) -> html.Div:
                         id      = "ob-baseline-options-visible",
                         options = [
                             {
-                                "label": "Recompute baseline from scratch "
-                                         "(overwrite if exists)",
+                                "label": "Trigger baseline recompute job now",
                                 "value": "recompute"
                             },
                         ],
@@ -1358,6 +1883,9 @@ def build_step5(
 
     bl_start = baseline.get("window_start", "—")
     bl_end   = baseline.get("window_end",   "—")
+    bl_mode  = baseline.get("baseline_mode", BASELINE_MODE_LAST30)
+    bl_lag   = baseline.get("baseline_lag_days", DEFAULT_BASELINE_LAG_DAYS)
+    val_lag  = baseline.get("validation_lag_days", DEFAULT_VALIDATION_LAG_DAYS)
     recompute= baseline.get("recompute",    True)
 
     try:
@@ -1585,9 +2113,12 @@ def build_step5(
 
         # Baseline
         html.Div([
-            html.H6("📊 Baseline Window",
+            html.H6("📊 Baseline Settings",
                     style={"color": TEXT_HEADING, "fontWeight": "700",
                            "marginBottom": "16px"}),
+            srow("Mode", "Last 30 complete days" if bl_mode == BASELINE_MODE_LAST30 else "Custom dates"),
+            srow("Baseline Lag", f"{bl_lag} day(s)"),
+            srow("Validation Lag", f"{val_lag} day(s)"),
             srow("Start Date",   bl_start),
             srow("End Date",     bl_end),
             srow("Window",       f"{days} days",
@@ -1705,6 +2236,128 @@ def build_existing_summary(existing: dict) -> html.Div:
         ]),
     ])
 
+
+def _table_columns(table_fqn: str, conn=None) -> set:
+    df = execute_query(f"DESCRIBE TABLE {table_fqn}", conn=conn)
+    cols = set()
+    for _, row in df.iterrows():
+        name = str(row.iloc[0]).strip()
+        if name and not name.startswith("#"):
+            cols.add(name)
+    return cols
+
+
+def _persist_table_lags(conn, fqn: str, baseline_lag_days: int, validation_lag_days: int):
+    try:
+        table_cols = _table_columns(f"{PREFIX}uc1_table_registry_b", conn=conn)
+    except Exception as e:
+        logger.warning(f"Unable to inspect table registry columns for lag persistence: {e}")
+        return
+
+    set_parts = []
+    params = {"fully_qualified_name": fqn}
+    if "baseline_lag_days" in table_cols:
+        set_parts.append("baseline_lag_days = :baseline_lag_days")
+        params["baseline_lag_days"] = int(baseline_lag_days)
+    if "validation_lag_days" in table_cols:
+        set_parts.append("validation_lag_days = :validation_lag_days")
+        params["validation_lag_days"] = int(validation_lag_days)
+
+    if not set_parts:
+        return
+
+    execute_write(
+        f"""
+        UPDATE {PREFIX}uc1_table_registry_b
+        SET {', '.join(set_parts)}
+        WHERE fully_qualified_name = :fully_qualified_name
+        """,
+        params,
+        conn=conn,
+    )
+
+
+def _trigger_agent1_baseline_job(table_meta: dict, baseline: dict) -> dict:
+    if not DS_AGENT1_JOB_ID:
+        return {
+            "ok": False,
+            "message": "DS_AGENT1_JOB_ID is not configured.",
+        }
+
+    fqn = (
+        f"{table_meta.get('catalog')}."
+        f"{table_meta.get('schema')}."
+        f"{table_meta.get('table_name')}"
+    )
+    mode = baseline.get("baseline_mode", BASELINE_MODE_LAST30)
+    run_mode = "CUSTOM" if mode == BASELINE_MODE_CUSTOM else "INITIAL"
+
+    params = {
+        "run_mode": run_mode,
+        "table_filter": fqn,
+        "run_validation": "false",
+    }
+    if run_mode == "CUSTOM":
+        params["baseline_start"] = baseline.get("window_start", "")
+        params["baseline_end"] = baseline.get("window_end", "")
+        try:
+            custom_end = date.fromisoformat((baseline.get("window_end") or "")[:10])
+            params["as_of_date"] = str(custom_end + timedelta(days=1))
+        except Exception:
+            params["as_of_date"] = str(date.today())
+        params["window_days"] = str(
+            (
+                date.fromisoformat(baseline.get("window_end"))
+                - date.fromisoformat(baseline.get("window_start"))
+            ).days + 1
+        )
+    else:
+        params["as_of_date"] = str(date.today())
+
+    w = WorkspaceClient()
+    run_now = w.jobs.run_now(job_id=int(DS_AGENT1_JOB_ID), job_parameters=params)
+    run_id_raw = (
+        getattr(run_now, "run_id", None)
+        or getattr(getattr(run_now, "response", None), "run_id", None)
+    )
+    if run_id_raw is None:
+        return {
+            "ok": False,
+            "message": "Agent1 run_now did not return a run_id.",
+        }
+    run_id = int(run_id_raw)
+
+    deadline = time.time() + JOB_POLL_TIMEOUT_SECONDS
+    while True:
+        run_info = w.jobs.get_run(run_id=run_id)
+        state = run_info.state
+        life_cycle_raw = getattr(state, "life_cycle_state", None) if state is not None else None
+        result_state_raw = getattr(state, "result_state", None) if state is not None else None
+        life_cycle = getattr(life_cycle_raw, "value", str(life_cycle_raw or ""))
+        result_state = getattr(result_state_raw, "value", str(result_state_raw or ""))
+        if life_cycle in {
+            "TERMINATED", "INTERNAL_ERROR", "SKIPPED",
+        }:
+            break
+        if time.time() >= deadline:
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "run_url": run_info.run_page_url,
+                "message": "Timed out while waiting for Agent1 baseline job result.",
+            }
+        time.sleep(JOB_POLL_INTERVAL_SECONDS)
+
+    ok = result_state == "SUCCESS"
+    return {
+        "ok": ok,
+        "run_id": run_id,
+        "run_url": run_info.run_page_url,
+        "life_cycle_state": life_cycle,
+        "result_state": result_state,
+        "message": "Baseline recompute job completed." if ok else "Baseline recompute job failed.",
+    }
+
 def _run_onboarding(
     table_meta  : dict,
     col_config  : dict,
@@ -1721,28 +2374,7 @@ def _run_onboarding(
         f"{table_meta['table_name']}"
     )
     tname    = table_meta["table_name"]
-    date_col = table_meta.get("date_column", "inserted_dt")
-    has_date = date_col and date_col != _NO_DATE_COL_VALUE
-    bl_start = baseline.get("window_start")
-    bl_end   = baseline.get("window_end")
     recompute= baseline.get("recompute", True)
-    today    = str(date.today())
-
-    # Build reusable WHERE clause for baseline queries
-    if has_date and bl_start and bl_end:
-        _date_where = (
-            f"WHERE CAST(`{date_col}` AS DATE) "
-            f"BETWEEN :bl_start AND :bl_end"
-        )
-        _date_where_and = (
-            f"AND CAST(`{date_col}` AS DATE) "
-            f"BETWEEN :bl_start AND :bl_end"
-        )
-        _date_params = {"bl_start": bl_start, "bl_end": bl_end}
-    else:
-        _date_where     = ""
-        _date_where_and = ""
-        _date_params    = {}
 
     steps   = []
     all_ok  = True
@@ -1994,393 +2626,28 @@ def _run_onboarding(
         ),
     })
 
-    # ── Step E: Baselines ──────────────────────────────────────────────────
-    if not recompute:
+    # ── Step E: Baseline handling moved to Agent1 job ─────────────────────
+    try:
+        _persist_table_lags(
+            conn,
+            fqn,
+            int(baseline.get("baseline_lag_days", DEFAULT_BASELINE_LAG_DAYS) or DEFAULT_BASELINE_LAG_DAYS),
+            int(baseline.get("validation_lag_days", DEFAULT_VALIDATION_LAG_DAYS) or DEFAULT_VALIDATION_LAG_DAYS),
+        )
+    except Exception as e:
+        logger.warning(f"Lag persistence skipped: {e}")
+
+    if recompute:
         steps.append({
-            "label" : "Baseline computation",
+            "label" : "Baseline recompute",
             "state" : "done",
-            "detail": "Skipped — recompute not selected",
+            "detail": "Deferred to Agent1 workflow trigger.",
         })
-    elif not has_date and (not bl_start or not bl_end):
-        # No date column — baselines use full table, no window needed
-        bl_start = None
-        bl_end   = None
-        bl_err   = []
-        days_in_window = 0
-        # fall through to baseline computation below
-    elif has_date and (not bl_start or not bl_end):
+    else:
         steps.append({
-            "label" : "Baseline computation",
-            "state" : "error",
-            "detail": "No baseline window dates provided",
-        })
-        all_ok = False
-
-    if recompute and (has_date and bl_start and bl_end or not has_date):
-        bl_err = []
-        try:
-            days_in_window = (
-                date.fromisoformat(bl_end) -
-                date.fromisoformat(bl_start)
-            ).days + 1
-        except Exception:
-            days_in_window = 30
-
-        def insert_baseline(
-            col_name, check_type, metric_name,
-            mean, stddev, min_val, max_val,
-            p25, p50, p75, p95, sample_count
-        ):
-            execute_write(
-                f"""
-                INSERT INTO {PREFIX}uc1_baseline_metrics_b (
-                    baseline_id,
-                    fully_qualified_name,
-                    column_name,
-                    check_type,
-                    metric_name,
-                    baseline_date,
-                    baseline_window_days,
-                    expected_value,
-                    mean_value,
-                    stddev_value,
-                    min_value,
-                    max_value,
-                    p25_value,
-                    p50_value,
-                    p75_value,
-                    p95_value,
-                    sample_count,
-                    is_sufficient_data,
-                    baseline_status,
-                    computed_timestamp,
-                    computed_by
-                ) VALUES (
-                    :baseline_id,
-                    :fully_qualified_name,
-                    :column_name,
-                    :check_type,
-                    :metric_name,
-                    :baseline_date,
-                    :baseline_window_days,
-                    :expected_value,
-                    :mean_value,
-                    :stddev_value,
-                    :min_value,
-                    :max_value,
-                    :p25_value,
-                    :p50_value,
-                    :p75_value,
-                    :p95_value,
-                    :sample_count,
-                    :is_sufficient_data,
-                    'ACTIVE',
-                    current_timestamp(),
-                    'onboarding_wizard'
-                )
-            """,
-                {
-                    "baseline_id": str(uuid.uuid4()),
-                    "fully_qualified_name": fqn,
-                    "column_name": col_name,
-                    "check_type": check_type,
-                    "metric_name": metric_name,
-                    "baseline_date": str(today),
-                    "baseline_window_days": days_in_window,
-                    "expected_value": mean,
-                    "mean_value": mean,
-                    "stddev_value": stddev or 0,
-                    "min_value": min_val,
-                    "max_value": max_val,
-                    "p25_value": p25 if p25 is not None else min_val,
-                    "p50_value": p50 if p50 is not None else mean,
-                    "p75_value": p75 if p75 is not None else max_val,
-                    "p95_value": p95 if p95 is not None else max_val,
-                    "sample_count": sample_count,
-                    "is_sufficient_data": bool(sample_count >= 14),
-                },
-                conn=conn,
-            )
-
-        # Volume
-        try:
-            df_vol = execute_query(f"""
-                SELECT
-                    AVG(daily_count)             AS mean,
-                    STDDEV(daily_count)           AS stddev,
-                    MIN(daily_count)              AS min_val,
-                    MAX(daily_count)              AS max_val,
-                    PERCENTILE(daily_count, 0.25) AS p25,
-                    PERCENTILE(daily_count, 0.50) AS p50,
-                    PERCENTILE(daily_count, 0.75) AS p75,
-                    PERCENTILE(daily_count, 0.95) AS p95,
-                    COUNT(*)                      AS days
-                FROM (
-                    SELECT
-                        CAST({date_col} AS DATE) AS dt,
-                        COUNT(*)                 AS daily_count
-                    FROM {fqn}
-                    {_date_where}
-                    GROUP BY CAST({date_col} AS DATE)
-                )
-            """, _date_params, conn=conn)
-            if (not df_vol.empty and
-                    df_vol.iloc[0]["mean"] is not None):
-                r = df_vol.iloc[0]
-                insert_baseline(
-                    "_table_", "VOLUME_ANOMALY", "daily_row_count",
-                    float(r["mean"]),
-                    float(r["stddev"] or 0),
-                    float(r["min_val"]),
-                    float(r["max_val"]),
-                    float(r["p25"]),
-                    float(r["p50"]),
-                    float(r["p75"]),
-                    float(r["p95"]),
-                    int(r["days"]),
-                )
-                bl_count += 1
-        except Exception as e:
-            bl_err.append(f"VOLUME: {str(e)[:80]}")
-
-        # Column baselines
-        for cname, cfg in col_config.items():
-            if not cfg.get("enabled", True):
-                continue
-            checks = cfg.get("checks", [])
-            dtype  = normalize_dtype(cfg.get("dtype", "STRING"))
-            # Nested paths (a.b, a.items.b) need LATERAL VIEW explode in FROM;
-            # pass the root column's type so resolution is schema-aware.
-            top_dt = None
-            if is_nested_path(cname):
-                root   = cfg.get("parent_column") or path_root(cname)
-                top_dt = (col_config.get(root) or {}).get("dtype")
-            try:
-                src_sql, cexpr = nested_sql_source(fqn, cname, top_dt)
-            except ValueError as e:
-                bl_err.append(f"{cname}: {str(e)[:80]}")
-                continue
-            is_num = dtype in (
-                "INT", "BIGINT", "DOUBLE", "FLOAT", "DECIMAL"
-            )
-
-            if "NULL_SPIKE" in checks:
-                try:
-                    df_nr = execute_query(f"""
-                        SELECT
-                            AVG(CASE WHEN {cexpr} IS NULL
-                                THEN 1.0 ELSE 0.0 END) * 100 AS null_rate,
-                            COUNT(*) AS cnt
-                        FROM {src_sql}
-                        {_date_where}
-                    """, _date_params, conn=conn)
-                    if (not df_nr.empty and
-                            df_nr.iloc[0]["null_rate"] is not None):
-                        r = df_nr.iloc[0]
-                        insert_baseline(
-                            cname, "NULL_SPIKE",
-                            f"{cname}_null_spike",
-                            float(r["null_rate"]), 0,
-                            0, 100, 0,
-                            float(r["null_rate"]),
-                            float(r["null_rate"]),
-                            100, int(r["cnt"]),
-                        )
-                        bl_count += 1
-                except Exception as e:
-                    bl_err.append(f"NULL_SPIKE/{cname}: {str(e)[:60]}")
-
-            if "NUMERIC_RANGE" in checks and is_num:
-                try:
-                    df_rr = execute_query(f"""
-                        SELECT
-                            AVG(CAST({cexpr} AS DOUBLE))              AS mean,
-                            STDDEV(CAST({cexpr} AS DOUBLE))           AS stddev,
-                            MIN(CAST({cexpr} AS DOUBLE))              AS min_val,
-                            MAX(CAST({cexpr} AS DOUBLE))              AS max_val,
-                            PERCENTILE(CAST({cexpr} AS DOUBLE), 0.25) AS p25,
-                            PERCENTILE(CAST({cexpr} AS DOUBLE), 0.50) AS p50,
-                            PERCENTILE(CAST({cexpr} AS DOUBLE), 0.75) AS p75,
-                            PERCENTILE(CAST({cexpr} AS DOUBLE), 0.95) AS p95,
-                            COUNT(*)                                   AS cnt
-                        FROM {src_sql}
-                        {_date_where}
-                          {'AND' if _date_where else 'WHERE'} {cexpr} IS NOT NULL
-                    """, _date_params, conn=conn)
-                    if (not df_rr.empty and
-                            df_rr.iloc[0]["mean"] is not None):
-                        r = df_rr.iloc[0]
-                        insert_baseline(
-                            cname, "NUMERIC_RANGE",
-                            f"{cname}_numeric_range",
-                            float(r["mean"]),
-                            float(r["stddev"] or 0),
-                            float(r["min_val"]),
-                            float(r["max_val"]),
-                            float(r["p25"]),
-                            float(r["p50"]),
-                            float(r["p75"]),
-                            float(r["p95"]),
-                            int(r["cnt"]),
-                        )
-                        bl_count += 1
-                except Exception as e:
-                    bl_err.append(f"RANGE/{cname}: {str(e)[:60]}")
-
-            if "DISTRIBUTION_DRIFT" in checks and is_num and has_date:
-                try:
-                    df_an = execute_query(f"""
-                        SELECT
-                            AVG(daily_avg)                        AS mean,
-                            STDDEV(daily_avg)                     AS stddev,
-                            MIN(daily_avg)                        AS min_val,
-                            MAX(daily_avg)                        AS max_val,
-                            PERCENTILE(daily_avg, 0.25)           AS p25,
-                            PERCENTILE(daily_avg, 0.50)           AS p50,
-                            PERCENTILE(daily_avg, 0.75)           AS p75,
-                            PERCENTILE(daily_avg, 0.95)           AS p95,
-                            COUNT(*)                              AS days
-                        FROM (
-                            SELECT
-                                CAST({date_col} AS DATE)     AS dt,
-                                AVG(CAST({cexpr} AS DOUBLE)) AS daily_avg
-                            FROM {src_sql}
-                            {_date_where}
-                              {'AND' if _date_where else 'WHERE'} {cexpr} IS NOT NULL
-                            GROUP BY CAST({date_col} AS DATE)
-                        )
-                    """, _date_params, conn=conn)
-                    if (not df_an.empty and
-                            df_an.iloc[0]["mean"] is not None):
-                        r = df_an.iloc[0]
-                        insert_baseline(
-                            cname, "DISTRIBUTION_DRIFT",
-                            f"{cname}_distribution_drift",
-                            float(r["mean"]),
-                            float(r["stddev"] or 0),
-                            float(r["min_val"]),
-                            float(r["max_val"]),
-                            float(r["p25"]),
-                            float(r["p50"]),
-                            float(r["p75"]),
-                            float(r["p95"]),
-                            int(r["days"]),
-                        )
-                        bl_count += 1
-                except Exception as e:
-                    bl_err.append(
-                        f"ANOMALY/{cname}: {str(e)[:60]}"
-                    )
-
-            # ── JSON / complex column checks ──────────────────────
-            is_cplx = cfg.get("is_complex", False)
-
-            if "JSON_VALID" in checks and is_cplx:
-                try:
-                    df_jv = execute_query(f"""
-                        SELECT
-                            COUNT(*) AS total,
-                            SUM(CASE
-                                WHEN {cname} IS NULL THEN 0
-                                WHEN from_json({cname}, 'MAP<STRING,STRING>')
-                                     IS NOT NULL THEN 1
-                                ELSE 0
-                            END) AS valid_json,
-                            AVG(CASE
-                                WHEN {cname} IS NULL THEN NULL
-                                WHEN from_json({cname}, 'MAP<STRING,STRING>')
-                                     IS NOT NULL THEN 0.0
-                                ELSE 1.0
-                            END) * 100 AS invalid_pct
-                        FROM {fqn}
-                        {_date_where}
-                    """, _date_params, conn=conn)
-                    if not df_jv.empty:
-                        r = df_jv.iloc[0]
-                        inv_pct = float(r["invalid_pct"] or 0)
-                        insert_baseline(
-                            cname, "JSON_VALID",
-                            f"{cname}_json_valid",
-                            inv_pct, 0, 0, 100, 0,
-                            inv_pct, inv_pct,
-                            100, int(r["total"]),
-                        )
-                        bl_count += 1
-                except Exception as e:
-                    bl_err.append(f"JSON_VALID/{cname}: {str(e)[:60]}")
-
-            if "KEY_CARDINALITY" in checks and is_cplx:
-                try:
-                    df_kc = execute_query(f"""
-                        WITH keys AS (
-                            SELECT explode(map_keys(
-                                from_json({cname}, 'MAP<STRING,STRING>')
-                            )) AS k
-                            FROM {fqn}
-                            {_date_where}
-                              {'AND' if _date_where else 'WHERE'} {cexpr} IS NOT NULL
-                        )
-                        SELECT
-                            COUNT(DISTINCT k) AS distinct_keys,
-                            COUNT(*) AS total_keys
-                        FROM keys
-                    """, _date_params, conn=conn)
-                    if not df_kc.empty:
-                        r = df_kc.iloc[0]
-                        dk = float(r["distinct_keys"] or 0)
-                        insert_baseline(
-                            cname, "KEY_CARDINALITY",
-                            f"{cname}_key_cardinality",
-                            dk, 0, dk, dk, dk, dk, dk,
-                            100, int(r["total_keys"]),
-                        )
-                        bl_count += 1
-                except Exception as e:
-                    bl_err.append(f"KEY_CARD/{cname}: {str(e)[:60]}")
-
-            if "SCHEMA_DRIFT" in checks and is_cplx and has_date:
-                try:
-                    df_sd = execute_query(f"""
-                        WITH keys AS (
-                            SELECT
-                                CAST({date_col} AS DATE) AS dt,
-                                sort_array(collect_set(
-                                    explode(map_keys(
-                                        from_json({cname}, 'MAP<STRING,STRING>')
-                                    ))
-                                )) AS key_set
-                            FROM {fqn}
-                            {_date_where}
-                              {'AND' if _date_where else 'WHERE'} {cexpr} IS NOT NULL
-                            GROUP BY CAST({date_col} AS DATE)
-                        )
-                        SELECT COUNT(DISTINCT key_set) AS schema_variants,
-                               COUNT(*) AS days
-                        FROM keys
-                    """, _date_params, conn=conn)
-                    if not df_sd.empty:
-                        r = df_sd.iloc[0]
-                        sv = float(r["schema_variants"] or 1)
-                        insert_baseline(
-                            cname, "SCHEMA_DRIFT",
-                            f"{cname}_schema_drift",
-                            sv, 0, 1, sv, 1, sv, sv,
-                            100, int(r["days"]),
-                        )
-                        bl_count += 1
-                except Exception as e:
-                    bl_err.append(f"SCHEMA_DRIFT/{cname}: {str(e)[:60]}")
-
-        if bl_err:
-            all_ok = False
-        steps.append({
-            "label" : "Statistical baselines computed",
-            "state" : "done" if not bl_err else "error",
-            "detail": (
-                f"{bl_count} baselines computed "
-                f"over {days_in_window}-day window"
-                + (f" | {len(bl_err)} errors" if bl_err else "")
-            ),
+            "label" : "Baseline recompute",
+            "state" : "done",
+            "detail": "Skipped — recompute not selected.",
         })
 
     conn.close()
@@ -2470,7 +2737,7 @@ def open_exec_modal(n_clicks, table_meta):
                 "Registering columns",
                 "Configuring column validation rules",
                 "Configuring table-level checks",
-                "Computing statistical baselines",
+                "Triggering Agent1 baseline recompute (optional)",
             ]
         ], style={"border"      : f"1px solid {BORDER_COLOR}",
                   "borderRadius": "8px",
@@ -2514,6 +2781,35 @@ def run_onboarding(
     val_count  = results.get("val_count",  0)
     tval_count = results.get("tval_count", 0)
     bl_count   = results.get("bl_count",   0)
+
+    job_result = None
+    if ok and baseline and baseline.get("recompute", True):
+        try:
+            job_result = _trigger_agent1_baseline_job(table_meta, baseline)
+            results["agent1_job"] = job_result
+            if job_result.get("ok"):
+                steps.append({
+                    "label": "Agent1 baseline recompute",
+                    "state": "done",
+                    "detail": (
+                        f"Run {job_result.get('run_id')} finished "
+                        f"with {job_result.get('result_state', 'SUCCESS')}."
+                    ),
+                })
+            else:
+                ok = False
+                steps.append({
+                    "label": "Agent1 baseline recompute",
+                    "state": "error",
+                    "detail": job_result.get("message", "Job trigger failed."),
+                })
+        except Exception as e:
+            ok = False
+            steps.append({
+                "label": "Agent1 baseline recompute",
+                "state": "error",
+                "detail": str(e)[:120],
+            })
 
     done_count = sum(1 for s in steps
                      if s.get("state") in ("done", "error"))
@@ -2632,6 +2928,18 @@ def run_onboarding(
                        color="outline-secondary",
                        outline=True, size="sm",
                        style={"marginRight": "8px"}),
+            dbc.Button(
+                "🔗 Baseline Job Run",
+                href=(job_result or {}).get("run_url"),
+                target="_blank",
+                color="outline-info",
+                outline=True,
+                size="sm",
+                style={
+                    "marginRight": "8px",
+                    "display": "inline-block" if (job_result or {}).get("run_url") else "none",
+                },
+            ),
             dbc.Button("➕ Onboard Another",
                        id="ob-restart-btn",
                        color="outline-primary",
@@ -2767,41 +3075,21 @@ def load_tables(schema, catalog):
 @callback(
     Output("ob-date-col", "options"),
     Output("ob-date-col", "value"),
+    Output("ob-date-col-disclaimer", "children"),
+    Output("ob-date-col-analysis", "data"),
     Input("ob-table",     "value"),
     State("ob-catalog",   "value"),
     State("ob-schema",    "value"),
 )
 def load_date_columns(table, catalog, schema):
     if not table or not catalog or not schema:
-        return [], None
+        return [], None, html.Div(), {}
     try:
         fqn = f"{catalog}.{schema}.{table}"
         validate_identifier(fqn)
         df = execute_query(f"DESCRIBE TABLE {fqn}")
         if df.empty:
-            return [_NO_DATE_COL_OPTION], _NO_DATE_COL_VALUE
-
-        DATE_TYPES = {
-            "DATE", "TIMESTAMP", "TIMESTAMP_NTZ",
-            "DATETIME", "TIMESTAMP_LTZ",
-        }
-        # Common date-like column names (for STRING columns)
-        DATE_NAME_HINTS = {
-            "date", "created", "updated", "modified", "timestamp",
-            "created_at", "updated_at", "event_time", "event_date",
-            "load_date", "inserted_dt", "business_date", "run_date",
-            "partition_date", "record_date", "file_date",
-            "transaction_date", "start", "end",
-            "__start_at", "__end_at", "_commit_timestamp",
-        }
-        PRIORITY = [
-            "business_date", "inserted_dt", "updated_dt",
-            "created", "updated", "created_at", "updated_at",
-            "transaction_date", "event_date", "load_date",
-            "created_date", "modified_date", "run_date",
-            "partition_date", "record_date", "file_date",
-            "__start_at",
-        ]
+            return [_NO_DATE_COL_OPTION], _NO_DATE_COL_VALUE, html.Div(), {}
 
         date_cols = []
         string_candidates = []
@@ -2821,39 +3109,20 @@ def load_date_columns(table, catalog, schema):
                 })
             elif dtype_norm == "STRING" and \
                     cname.lower() in DATE_NAME_HINTS:
-                string_candidates.append(cname)
+                string_candidates.append({
+                    "name": cname,
+                    "dtype": "STRING",
+                    "tag": "STRING → DATE",
+                })
 
-        # Probe STRING candidates: sample 5 rows and check
-        # if values parse as dates
+        # Limit string candidates to keep profiling predictable on very wide tables.
         if string_candidates:
-            try:
-                sample_cols = ", ".join(
-                    f"`{c}` AS `{c}`" for c in string_candidates
-                )
-                df_sample = execute_query(
-                    f"SELECT {sample_cols} FROM {fqn} "
-                    f"WHERE {string_candidates[0]} IS NOT NULL "
-                    f"LIMIT 5"
-                )
-                import re
-                date_re = re.compile(
-                    r"^\d{4}-\d{2}-\d{2}"
-                )
-                for sc in string_candidates:
-                    if sc in df_sample.columns:
-                        vals = df_sample[sc].dropna().astype(str)
-                        if len(vals) > 0 and all(
-                            date_re.match(v) for v in vals
-                        ):
-                            date_cols.append({
-                                "name" : sc,
-                                "dtype": "STRING",
-                                "tag"  : "STRING → DATE",
-                            })
-            except Exception as probe_err:
-                logger.warning(
-                    f"Date probe failed: {probe_err}"
-                )
+            pr = {k: i for i, k in enumerate(DATE_PRIORITY)}
+            string_candidates = sorted(
+                string_candidates,
+                key=lambda x: pr.get(x["name"].lower(), 999),
+            )[:8]
+            date_cols.extend(string_candidates)
 
         # Build options — always include "no date column"
         options = [
@@ -2864,39 +3133,93 @@ def load_date_columns(table, catalog, schema):
         options.append(_NO_DATE_COL_OPTION)
 
         if not date_cols:
-            return options, _NO_DATE_COL_VALUE
+            no_date_msg = dbc.Alert(
+                [
+                    html.Strong("No reliable business date column detected."),
+                    html.Br(),
+                    html.Small(
+                        "You can proceed with full-table baselines or add a date column.",
+                        style=MUTED_STYLE,
+                    ),
+                ],
+                color="warning",
+                className="mt-2",
+            )
+            return options, _NO_DATE_COL_VALUE, no_date_msg, {
+                "fqn": fqn,
+                "profiles": [],
+                "recommended_column": _NO_DATE_COL_VALUE,
+                "recommended_source": "rule",
+                "llm": {"used": False, "reason": "no_candidates"},
+            }
 
-        # Auto-select best default
-        col_lower = [c["name"].lower() for c in date_cols]
-        default   = None
-        for p in PRIORITY:
-            if p.lower() in col_lower:
-                default = date_cols[col_lower.index(p.lower())]["name"]
-                break
-        if default is None:
-            default = date_cols[0]["name"]
+        rule_recommended, profiles = _recommend_date_column(fqn, date_cols)
+        if not rule_recommended:
+            rule_recommended = date_cols[0]["name"]
 
-        return options, default
+        llm = _llm_date_recommendation(fqn, profiles)
+        final_recommended = rule_recommended
+        source = "rule"
+        if llm.get("used") and llm.get("recommended_column"):
+            final_recommended = llm["recommended_column"]
+            source = "llm"
+
+        analysis = {
+            "fqn": fqn,
+            "profiles": profiles,
+            "rule_recommended": rule_recommended,
+            "recommended_column": final_recommended,
+            "recommended_source": source,
+            "llm": llm,
+        }
+        disclaimer = _date_disclaimer_block(final_recommended, analysis)
+
+        return options, final_recommended, disclaimer, analysis
 
     except Exception as e:
         logger.error(f"load_date_columns failed: {e}")
-        return [_NO_DATE_COL_OPTION], _NO_DATE_COL_VALUE
+        return [_NO_DATE_COL_OPTION], _NO_DATE_COL_VALUE, html.Div(), {}
 
 
 # ── Baseline warning (reads from visible pickers) ─────────────────────────
 
 @callback(
     Output("ob-baseline-warning-visible", "children"),
+    Input("ob-baseline-mode-visible",     "value"),
+    Input("ob-baseline-lag-visible",      "value"),
     Input("ob-baseline-start-visible",    "date"),
     Input("ob-baseline-end-visible",      "date"),
 )
-def baseline_warning_visible(start, end):
-    if not start or not end:
-        return html.Div()
+def baseline_warning_visible(mode, lag_days, start, end):
     try:
+        mode = mode or BASELINE_MODE_LAST30
+        lag = max(0, int(lag_days or DEFAULT_BASELINE_LAG_DAYS))
+        if mode == BASELINE_MODE_LAST30:
+            end_dt = date.today() - timedelta(days=lag)
+            start_dt = end_dt - timedelta(days=29)
+        else:
+            if not start or not end:
+                return dbc.Alert(
+                    "Select both custom start and end dates.",
+                    color="warning",
+                    className="mb-3",
+                )
+            start_dt = date.fromisoformat(start)
+            end_dt = date.fromisoformat(end)
+            if start_dt > end_dt:
+                return dbc.Alert(
+                    "Baseline start date must be on or before end date.",
+                    color="danger",
+                    className="mb-3",
+                )
+            if end_dt >= date.today():
+                return dbc.Alert(
+                    "Baseline end date must be before today.",
+                    color="danger",
+                    className="mb-3",
+                )
         days = (
-            date.fromisoformat(end) -
-            date.fromisoformat(start)
+            end_dt - start_dt
         ).days + 1
         if days < 14:
             return dbc.Alert(
@@ -2904,10 +3227,26 @@ def baseline_warning_visible(start, end):
                 color="warning", className="mb-3"
             )
         return dbc.Alert(
-            f"✅ {days} days selected — good baseline window.",
+            f"✅ {days} days selected — good baseline window ({start_dt} to {end_dt}).",
             color="success", className="mb-3"
         )
     except Exception:
+        return html.Div()
+
+
+@callback(
+    Output("ob-date-col-disclaimer", "children", allow_duplicate=True),
+    Input("ob-date-col", "value"),
+    State("ob-date-col-analysis", "data"),
+    prevent_initial_call=True,
+)
+def update_date_col_disclaimer(selected_col, analysis):
+    if not analysis:
+        return html.Div()
+    try:
+        return _date_disclaimer_block(selected_col, analysis)
+    except Exception as e:
+        logger.warning(f"update_date_col_disclaimer failed: {e}")
         return html.Div()
 
 
@@ -3020,11 +3359,78 @@ def sync_baseline_end(d):
     return d
 
 
+@callback(
+    Output("ob-baseline-mode", "data"),
+    Input("ob-baseline-mode-visible", "value"),
+    prevent_initial_call=True,
+)
+def sync_baseline_mode(mode):
+    return mode or BASELINE_MODE_LAST30
+
+
+@callback(
+    Output("ob-baseline-lag-days", "data"),
+    Input("ob-baseline-lag-visible", "value"),
+    prevent_initial_call=True,
+)
+def sync_baseline_lag_days(val):
+    try:
+        return max(0, int(val))
+    except Exception:
+        return DEFAULT_BASELINE_LAG_DAYS
+
+
+@callback(
+    Output("ob-validation-lag-days", "data"),
+    Input("ob-validation-lag-visible", "value"),
+    prevent_initial_call=True,
+)
+def sync_validation_lag_days(val):
+    try:
+        return max(0, int(val))
+    except Exception:
+        return DEFAULT_VALIDATION_LAG_DAYS
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # STEP NAVIGATION CALLBACKS
 # ══════════════════════════════════════════════════════════════════════════
 
 # ── Next 1 → 2 ────────────────────────────────────────────────────────────
+
+def _build_col_config_from_describe_df(df_desc):
+    col_config = {}
+    for _, row in df_desc.iterrows():
+        cname = str(row.iloc[0]).strip()
+        dtype = str(row.iloc[1]).strip() if len(df_desc.columns) > 1 else "STRING"
+        if not cname or cname.startswith("#"):
+            continue
+
+        col_config[cname] = {
+            "dtype": dtype,
+            "nullable": True,
+            "enabled": _type_base(dtype) not in ("STRUCT", "ARRAY"),
+            "is_complex": is_complex_dtype(dtype),
+            "checks": get_default_checks_for_dtype(dtype, cname),
+            "warn_threshold": 5,
+            "crit_threshold": 10,
+        }
+
+        if _type_base(dtype) in ("STRUCT", "ARRAY"):
+            for leaf in flatten_nested_type(cname, dtype):
+                col_config[leaf["path"]] = {
+                    "dtype": leaf["dtype"],
+                    "nullable": True,
+                    "enabled": True,
+                    "is_complex": is_complex_dtype(leaf["dtype"]),
+                    "is_nested_child": True,
+                    "parent_column": cname,
+                    "checks": get_default_checks_for_dtype(leaf["dtype"], leaf["path"]),
+                    "warn_threshold": 5,
+                    "crit_threshold": 10,
+                }
+
+    return col_config
 
 @callback(
     Output("ob-step",       "data",     allow_duplicate=True),
@@ -3132,40 +3538,7 @@ def next_step1(
             f"DESCRIBE TABLE {catalog}.{schema}.{table}"
         )
 
-        new_col_config = {}
-        for _, row in df_desc.iterrows():
-            cname = str(row.iloc[0]).strip()
-            dtype = str(row.iloc[1]).strip() \
-                    if len(df_desc.columns) > 1 else "STRING"
-            if not cname or cname.startswith("#") or cname == "":
-                continue
-            # Complex (STRUCT/ARRAY) parents start OFF; switching them on
-            # in Step 2 expands their nested fields.
-            new_col_config[cname] = {
-                "dtype"          : dtype,
-                "nullable"       : True,
-                "enabled"        : _type_base(dtype) not in ("STRUCT", "ARRAY"),
-                "is_complex"     : is_complex_dtype(dtype),
-                "checks"         : get_default_checks_for_dtype(dtype, cname),
-                "warn_threshold" : 5,
-                "crit_threshold" : 10,
-            }
-
-            # Explode STRUCT / ARRAY columns into leaf columns that get
-            # the full primitive treatment (enable, checks, thresholds).
-            if _type_base(dtype) in ("STRUCT", "ARRAY"):
-                for leaf in flatten_nested_type(cname, dtype):
-                    new_col_config[leaf["path"]] = {
-                        "dtype"          : leaf["dtype"],
-                        "nullable"       : True,
-                        "enabled"        : True,
-                        "is_complex"     : is_complex_dtype(leaf["dtype"]),
-                        "is_nested_child": True,
-                        "parent_column"  : cname,
-                        "checks"         : get_default_checks_for_dtype(leaf["dtype"], leaf["path"]),
-                        "warn_threshold" : 5,
-                        "crit_threshold" : 10,
-                    }
+        new_col_config = _build_col_config_from_describe_df(df_desc)
 
         return 2, new_meta, new_col_config, {}, html.Div()
 
@@ -3224,7 +3597,10 @@ def next_step2(
             selected = (ch[i] if i < len(ch) else []) or []
             dtype = new_col[cname].get("dtype", "STRING")
             allowed = set(get_available_checks_for_dtype(dtype, cname))
-            new_col[cname]["checks"] = [c for c in selected if c in allowed]
+            new_col[cname]["checks"] = [
+                c for c in selected
+                if c in allowed and _is_check_enabled_for_selection(c)
+            ]
             new_col[cname]["warn_threshold"] = wa[i] if i < len(wa) else 5
             new_col[cname]["crit_threshold"] = cr[i] if i < len(cr) else 10
 
@@ -3330,7 +3706,8 @@ def next_step3(
         )
         new_tbl[chk_id] = {
             "enabled": (
-                tbl_en_vals[i] if i < len(tbl_en_vals) else False
+                (tbl_en_vals[i] if i < len(tbl_en_vals) else False)
+                and _is_check_enabled_for_selection(chk_id)
             ),
             "warn": (
                 tbl_warn_vals[i]
@@ -3352,22 +3729,64 @@ def next_step3(
     Output("ob-baseline", "data",     allow_duplicate=True),
     Output("ob-alert",    "children", allow_duplicate=True),
     Input("ob-next-4",    "n_clicks"),
+    State("ob-baseline-mode",    "data"),
+    State("ob-baseline-lag-days", "data"),
+    State("ob-validation-lag-days", "data"),
     State("ob-baseline-start",   "date"),
     State("ob-baseline-end",     "date"),
     State("ob-baseline-options", "value"),
     prevent_initial_call=True,
 )
-def next_step4(n_clicks, bl_start, bl_end, bl_options):
+def next_step4(n_clicks, mode, bl_lag_days, val_lag_days, bl_start, bl_end, bl_options):
     if not n_clicks:
         raise dash.exceptions.PreventUpdate
 
-    if not bl_start or not bl_end:
-        return (
-            dash.no_update, dash.no_update,
-            error_alert("Please select baseline start and end dates.")
-        )
+    mode = mode or BASELINE_MODE_LAST30
+
+    try:
+        baseline_lag_days = max(0, int(bl_lag_days or DEFAULT_BASELINE_LAG_DAYS))
+    except Exception:
+        baseline_lag_days = DEFAULT_BASELINE_LAG_DAYS
+
+    try:
+        validation_lag_days = max(0, int(val_lag_days or DEFAULT_VALIDATION_LAG_DAYS))
+    except Exception:
+        validation_lag_days = DEFAULT_VALIDATION_LAG_DAYS
+
+    if mode == BASELINE_MODE_LAST30:
+        end_dt = date.today() - timedelta(days=baseline_lag_days)
+        start_dt = end_dt - timedelta(days=29)
+        bl_start = str(start_dt)
+        bl_end = str(end_dt)
+    else:
+        if not bl_start or not bl_end:
+            return (
+                dash.no_update, dash.no_update,
+                error_alert("Please select baseline start and end dates.")
+            )
+        try:
+            start_dt = date.fromisoformat(bl_start)
+            end_dt = date.fromisoformat(bl_end)
+        except Exception:
+            return (
+                dash.no_update, dash.no_update,
+                error_alert("Baseline dates must be valid ISO dates (YYYY-MM-DD).")
+            )
+        if start_dt > end_dt:
+            return (
+                dash.no_update, dash.no_update,
+                error_alert("Baseline start date must be on or before end date.")
+            )
+        if end_dt >= date.today():
+            return (
+                dash.no_update, dash.no_update,
+                error_alert("Baseline end date must be before today.")
+            )
 
     new_bl = {
+        "baseline_mode"    : mode,
+        "baseline_lag_days" : baseline_lag_days,
+        "validation_lag_days": validation_lag_days,
         "window_start"     : bl_start,
         "window_end"       : bl_end,
         "recompute"        : "recompute" in (bl_options or []),
@@ -3405,15 +3824,217 @@ def handle_back(b2, b3, b4, b5, b_ex):
 
 @callback(
     Output("ob-step",     "data",     allow_duplicate=True),
+    Output("ob-table-meta", "data",   allow_duplicate=True),
+    Output("ob-col-config", "data",   allow_duplicate=True),
+    Output("ob-table-checks", "data", allow_duplicate=True),
+    Output("ob-baseline", "data",     allow_duplicate=True),
     Output("ob-existing", "data",     allow_duplicate=True),
     Output("ob-alert",    "children", allow_duplicate=True),
     Input("ob-modify-btn","n_clicks"),
+    State("ob-table-meta", "data"),
+    State("ob-existing", "data"),
     prevent_initial_call=True,
 )
-def handle_modify(n_clicks):
+def handle_modify(n_clicks, table_meta, existing):
     if not n_clicks:
         raise dash.exceptions.PreventUpdate
-    return 2, {}, html.Div()
+
+    fqn = (existing or {}).get("fully_qualified_name") or (table_meta or {}).get("fqn")
+    if not fqn:
+        return (
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            error_alert("Could not determine selected table for modify flow."),
+        )
+
+    try:
+        safe_fqn = validate_identifier(fqn)
+
+        df_desc = execute_query(f"DESCRIBE TABLE {safe_fqn}")
+        col_config = _build_col_config_from_describe_df(df_desc)
+
+        df_table = execute_query(
+            f"""
+            SELECT *
+            FROM {PREFIX}uc1_table_registry_b
+            WHERE fully_qualified_name = :fqn
+            ORDER BY registered_timestamp DESC
+            LIMIT 1
+            """,
+            {"fqn": fqn},
+        )
+
+        df_cols = execute_query(
+            f"""
+            SELECT column_name, expected_data_type, is_nullable, is_active
+            FROM {PREFIX}uc1_column_registry_b
+            WHERE fully_qualified_name = :fqn
+            """,
+            {"fqn": fqn},
+        )
+        for _, row in df_cols.iterrows():
+            cname = str(row.get("column_name") or "").strip()
+            if not cname:
+                continue
+            dtype = str(row.get("expected_data_type") or "STRING")
+            cfg = col_config.get(cname, {
+                "dtype": dtype,
+                "nullable": bool(row.get("is_nullable", True)),
+                "enabled": bool(row.get("is_active", True)),
+                "is_complex": is_complex_dtype(dtype),
+                "checks": get_default_checks_for_dtype(dtype, cname),
+                "warn_threshold": 5,
+                "crit_threshold": 10,
+            })
+            cfg["dtype"] = dtype
+            cfg["nullable"] = bool(row.get("is_nullable", True))
+            cfg["enabled"] = bool(row.get("is_active", True))
+            col_config[cname] = cfg
+
+        df_col_rules = execute_query(
+            f"""
+            SELECT
+                column_name,
+                validation_name,
+                warning_threshold,
+                critical_threshold,
+                is_active
+            FROM {PREFIX}uc1_column_validation_registry_b
+            WHERE fully_qualified_name = :fqn
+            """,
+            {"fqn": fqn},
+        )
+        rules_by_col = {}
+        thr_by_col = {}
+        for _, row in df_col_rules.iterrows():
+            if not bool(row.get("is_active", True)):
+                continue
+            cname = str(row.get("column_name") or "").strip()
+            check = str(row.get("validation_name") or "").strip()
+            if not cname or not check:
+                continue
+            if not _is_check_enabled_for_selection(check):
+                continue
+            rules_by_col.setdefault(cname, []).append(check)
+            if cname not in thr_by_col:
+                thr_by_col[cname] = (
+                    row.get("warning_threshold"),
+                    row.get("critical_threshold"),
+                )
+
+        for cname, cfg in col_config.items():
+            checks = [
+                c for c in rules_by_col.get(cname, cfg.get("checks", []))
+                if _is_check_enabled_for_selection(c)
+            ]
+            cfg["checks"] = checks
+            warn, crit = thr_by_col.get(cname, (cfg.get("warn_threshold", 5), cfg.get("crit_threshold", 10)))
+            cfg["warn_threshold"] = 5 if warn is None else float(warn)
+            cfg["crit_threshold"] = 10 if crit is None else float(crit)
+
+        table_checks = {
+            chk["id"]: {
+                "enabled": chk["default_on"] and _is_check_enabled_for_selection(chk["id"]),
+                "warn": chk["warn"],
+                "crit": chk["crit"],
+            }
+            for chk in TABLE_CHECK_TYPES
+        }
+        df_tbl_rules = execute_query(
+            f"""
+            SELECT validation_name, warning_threshold, critical_threshold, is_active
+            FROM {PREFIX}uc1_table_validation_registry_b
+            WHERE fully_qualified_name = :fqn
+            """,
+            {"fqn": fqn},
+        )
+        for _, row in df_tbl_rules.iterrows():
+            chk_id = str(row.get("validation_name") or "").strip()
+            if chk_id not in table_checks or not _is_check_enabled_for_selection(chk_id):
+                continue
+            table_checks[chk_id] = {
+                "enabled": bool(row.get("is_active", True)),
+                "warn": row.get("warning_threshold"),
+                "crit": row.get("critical_threshold"),
+            }
+
+        baseline = {
+            "baseline_mode": BASELINE_MODE_LAST30,
+            "baseline_lag_days": DEFAULT_BASELINE_LAG_DAYS,
+            "validation_lag_days": DEFAULT_VALIDATION_LAG_DAYS,
+            "window_start": str(date.today() - timedelta(days=30)),
+            "window_end": str(date.today() - timedelta(days=1)),
+            "recompute": True,
+            "recompute_checked": ["recompute"],
+        }
+
+        if not df_table.empty:
+            row = df_table.iloc[0]
+            if "baseline_lag_days" in df_table.columns and row.get("baseline_lag_days") is not None:
+                baseline["baseline_lag_days"] = int(row.get("baseline_lag_days"))
+            if "validation_lag_days" in df_table.columns and row.get("validation_lag_days") is not None:
+                baseline["validation_lag_days"] = int(row.get("validation_lag_days"))
+
+        try:
+            df_latest_baseline = execute_query(
+                f"""
+                SELECT
+                    baseline_version_id,
+                    window_start,
+                    window_end,
+                    run_mode
+                FROM {PREFIX}uc1_baseline_metrics_b
+                WHERE fully_qualified_name = :fqn
+                  AND baseline_version_id IS NOT NULL
+                ORDER BY effective_date DESC, computed_timestamp DESC
+                LIMIT 1
+                """,
+                {"fqn": fqn},
+            )
+            if not df_latest_baseline.empty:
+                b = df_latest_baseline.iloc[0]
+                ws = b.get("window_start")
+                we = b.get("window_end")
+                if ws and we:
+                    baseline["baseline_mode"] = BASELINE_MODE_CUSTOM
+                    baseline["window_start"] = str(ws)[:10]
+                    baseline["window_end"] = str(we)[:10]
+        except Exception as e:
+            logger.warning(f"Baseline metadata prefill skipped for {fqn}: {e}")
+
+        out_table_meta = dict(table_meta or {})
+        parts = fqn.split(".")
+        if len(parts) == 3:
+            out_table_meta.update({
+                "catalog": parts[0],
+                "schema": parts[1],
+                "table_name": parts[2],
+                "fqn": fqn,
+            })
+        if not df_table.empty:
+            r0 = df_table.iloc[0]
+            out_table_meta["ingestion_type"] = str(r0.get("source_type") or out_table_meta.get("ingestion_type", "FILE"))
+            out_table_meta["layer"] = str(r0.get("ingestion_pattern") or out_table_meta.get("layer", "BRONZE"))
+            out_table_meta["ingestion_frequency"] = str(r0.get("ingestion_frequency") or out_table_meta.get("ingestion_frequency", "DAILY"))
+            biz_col = str(r0.get("business_date_column") or "").strip()
+            out_table_meta["date_column"] = biz_col if biz_col else _NO_DATE_COL_VALUE
+
+        return 2, out_table_meta, col_config, table_checks, baseline, {}, html.Div()
+    except Exception as e:
+        logger.error(f"handle_modify failed: {e}")
+        return (
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            error_alert(f"Failed to load existing configuration: {e}"),
+        )
 
 
 # ── Restart ────────────────────────────────────────────────────────────────
