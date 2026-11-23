@@ -18,6 +18,13 @@ from config.settings import (
     ID_NAME_REGEX,
 )
 from components.alerts import error_alert, warning_alert
+from components.baseline_window_policy import (
+    WINDOW_POLICY_MONTH,
+    compute_default_window,
+    days_in_window,
+    first_validation_business_date,
+    next_refresh_date,
+)
 from datetime import date, timedelta
 import logging
 import uuid
@@ -187,6 +194,8 @@ BASELINE_MODE_LAST30 = "LAST_30_COMPLETE_DAYS"
 BASELINE_MODE_CUSTOM = "CUSTOM_DATES"
 DEFAULT_BASELINE_LAG_DAYS = 1
 DEFAULT_VALIDATION_LAG_DAYS = 1
+MIN_BASELINE_DAYS_RECOMMENDED = 14
+MAX_BASELINE_DAYS_ALLOWED = 90
 
 DS_AGENT1_JOB_ID = os.environ.get("DS_AGENT1_JOB_ID", "").strip()
 JOB_POLL_INTERVAL_SECONDS = 10
@@ -198,6 +207,97 @@ def is_complex_dtype(dtype: str) -> bool:
     """Return True if the data type is complex / JSON / nested."""
     norm = (dtype or "").upper().split("<")[0].split("(")[0].strip()
     return norm in COMPLEX_TYPES
+
+
+def _coerce_min_one_day(raw, default_val: int = 1) -> int:
+    try:
+        return max(1, int(raw or default_val))
+    except Exception:
+        return max(1, int(default_val))
+
+
+def _compute_option_a_window(lag_days: int):
+    return compute_default_window(date.today(), lag_days, WINDOW_POLICY_MONTH)
+
+
+def _window_validation(mode: str, lag_days: int, start_raw: str, end_raw: str):
+    mode = mode or BASELINE_MODE_LAST30
+    lag = _coerce_min_one_day(lag_days, DEFAULT_BASELINE_LAG_DAYS)
+
+    if mode == BASELINE_MODE_LAST30:
+        start_dt, end_dt = _compute_option_a_window(lag)
+    else:
+        if not start_raw or not end_raw:
+            return {
+                "valid": False,
+                "color": "danger",
+                "message": "Select both custom start and end dates.",
+                "start": None,
+                "end": None,
+                "days": 0,
+            }
+        try:
+            start_dt = date.fromisoformat(str(start_raw)[:10])
+            end_dt = date.fromisoformat(str(end_raw)[:10])
+        except Exception:
+            return {
+                "valid": False,
+                "color": "danger",
+                "message": "Baseline dates must be valid ISO dates (YYYY-MM-DD).",
+                "start": None,
+                "end": None,
+                "days": 0,
+            }
+
+    max_end = date.today() - timedelta(days=lag)
+    if start_dt > end_dt:
+        return {
+            "valid": False,
+            "color": "danger",
+            "message": "Baseline start date must be on or before end date.",
+            "start": start_dt,
+            "end": end_dt,
+            "days": 0,
+        }
+    if end_dt > max_end:
+        return {
+            "valid": False,
+            "color": "danger",
+            "message": f"Baseline end date must be on or before {max_end}.",
+            "start": start_dt,
+            "end": end_dt,
+            "days": 0,
+        }
+
+    days = days_in_window(start_dt, end_dt)
+    if days > MAX_BASELINE_DAYS_ALLOWED:
+        return {
+            "valid": False,
+            "color": "danger",
+            "message": f"{days} days selected — maximum allowed is {MAX_BASELINE_DAYS_ALLOWED} days.",
+            "start": start_dt,
+            "end": end_dt,
+            "days": days,
+        }
+
+    if days < MIN_BASELINE_DAYS_RECOMMENDED:
+        return {
+            "valid": True,
+            "color": "warning",
+            "message": f"{days} days selected — minimum {MIN_BASELINE_DAYS_RECOMMENDED} recommended.",
+            "start": start_dt,
+            "end": end_dt,
+            "days": days,
+        }
+
+    return {
+        "valid": True,
+        "color": "success",
+        "message": f"{days} days selected — good baseline window ({start_dt} to {end_dt}).",
+        "start": start_dt,
+        "end": end_dt,
+        "days": days,
+    }
 
 
 def get_default_checks_for_dtype(dtype: str, column_name: str = None) -> list:
@@ -1693,16 +1793,32 @@ def build_step3(prefill: dict = None) -> html.Div:
 def build_step4(prefill: dict = None) -> html.Div:
     p        = prefill or {}
     baseline_mode = p.get("baseline_mode", BASELINE_MODE_LAST30)
-    baseline_lag_days = int(p.get("baseline_lag_days", DEFAULT_BASELINE_LAG_DAYS) or DEFAULT_BASELINE_LAG_DAYS)
-    validation_lag_days = int(p.get("validation_lag_days", DEFAULT_VALIDATION_LAG_DAYS) or DEFAULT_VALIDATION_LAG_DAYS)
+    baseline_lag_days = _coerce_min_one_day(
+        p.get("baseline_lag_days", DEFAULT_BASELINE_LAG_DAYS),
+        DEFAULT_BASELINE_LAG_DAYS,
+    )
+    validation_lag_days = _coerce_min_one_day(
+        p.get("validation_lag_days", DEFAULT_VALIDATION_LAG_DAYS),
+        DEFAULT_VALIDATION_LAG_DAYS,
+    )
 
-    auto_end_dt = date.today() - timedelta(days=max(0, baseline_lag_days))
-    auto_start_dt = auto_end_dt - timedelta(days=29)
-
+    auto_start_dt, auto_end_dt = _compute_option_a_window(baseline_lag_days)
     start_val = p.get("window_start", str(auto_start_dt))
     end_val   = p.get("window_end",   str(auto_end_dt))
-    recompute = p.get("recompute_checked", ["recompute"])
-    custom_disabled = baseline_mode != BASELINE_MODE_CUSTOM
+    is_modify_flow = bool(p.get("is_modify_flow", False))
+    recompute = p.get("recompute_checked", ["recompute"] if is_modify_flow else [])
+    max_allowed = date.today() - timedelta(days=baseline_lag_days)
+
+    next_refresh = next_refresh_date(date.today(), (1, 15))
+    next_refresh_start, next_refresh_end = compute_default_window(
+        next_refresh,
+        baseline_lag_days,
+        WINDOW_POLICY_MONTH,
+    )
+    first_val_business_date = first_validation_business_date(
+        date.today(),
+        validation_lag_days,
+    )
 
     return html.Div([
         html.Div([
@@ -1726,7 +1842,7 @@ def build_step4(prefill: dict = None) -> html.Div:
                         id="ob-baseline-mode-visible",
                         options=[
                             {
-                                "label": "Option A — Last 30 complete days (from lag)",
+                                "label": "Recommended — previous month of complete data",
                                 "value": BASELINE_MODE_LAST30,
                             },
                             {
@@ -1739,7 +1855,7 @@ def build_step4(prefill: dict = None) -> html.Div:
                         style={"color": TEXT_PRIMARY},
                     ),
                     html.Small(
-                        f"Option A computes {auto_start_dt} to {auto_end_dt} from baseline lag days.",
+                        f"Recommended window computes {auto_start_dt} to {auto_end_dt} from lag.",
                         style=MUTED_STYLE,
                     ),
                 ], md=12),
@@ -1747,46 +1863,12 @@ def build_step4(prefill: dict = None) -> html.Div:
 
             dbc.Row([
                 dbc.Col([
-                    html.Label("Baseline Lag Days", style=LABEL_STYLE),
-                    dbc.Input(
-                        id="ob-baseline-lag-visible",
-                        value=baseline_lag_days,
-                        type="number",
-                        min=0,
-                        step=1,
-                        style={
-                            "backgroundColor": "#2C2E33",
-                            "color": TEXT_PRIMARY,
-                            "border": f"1px solid {BORDER_COLOR}",
-                        },
-                    ),
-                    html.Small("Defaults to 1 day.", style=MUTED_STYLE),
-                ], md=6),
-                dbc.Col([
-                    html.Label("Validation Lag Days", style=LABEL_STYLE),
-                    dbc.Input(
-                        id="ob-validation-lag-visible",
-                        value=validation_lag_days,
-                        type="number",
-                        min=0,
-                        step=1,
-                        style={
-                            "backgroundColor": "#2C2E33",
-                            "color": TEXT_PRIMARY,
-                            "border": f"1px solid {BORDER_COLOR}",
-                        },
-                    ),
-                    html.Small("Defaults to 1 day.", style=MUTED_STYLE),
-                ], md=6),
-            ], className="mb-4"),
-
-            dbc.Row([
-                dbc.Col([
                     html.Label("Baseline Start Date", style=LABEL_STYLE),
                     dcc.DatePickerSingle(
                         id             = "ob-baseline-start-visible",
                         date           = start_val,
-                        disabled       = custom_disabled,
+                        disabled       = baseline_mode != BASELINE_MODE_CUSTOM,
+                        max_date_allowed = str(max_allowed),
                         display_format = "YYYY-MM-DD",
                         style          = {"width": "100%"},
                     ),
@@ -1796,7 +1878,8 @@ def build_step4(prefill: dict = None) -> html.Div:
                     dcc.DatePickerSingle(
                         id             = "ob-baseline-end-visible",
                         date           = end_val,
-                        disabled       = custom_disabled,
+                        disabled       = baseline_mode != BASELINE_MODE_CUSTOM,
+                        max_date_allowed = str(max_allowed),
                         display_format = "YYYY-MM-DD",
                         style          = {"width": "100%"},
                     ),
@@ -1804,35 +1887,93 @@ def build_step4(prefill: dict = None) -> html.Div:
                 dbc.Col([
                     html.Label("Minimum Recommended", style=LABEL_STYLE),
                     html.Div(
-                        "14 days",
+                        f"{MIN_BASELINE_DAYS_RECOMMENDED} days",
                         style={**MUTED_STYLE, "paddingTop": "10px"}
                     ),
                 ], md=4),
             ], className="mb-4"),
 
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Presets", style=LABEL_STYLE),
+                    html.Div([
+                        dbc.Button("Previous month", id="ob-preset-prev-month", color="secondary", outline=True, size="sm", className="me-2"),
+                        dbc.Button("Last 30 days", id="ob-preset-last-30", color="secondary", outline=True, size="sm", className="me-2"),
+                        dbc.Button("Last 60 days", id="ob-preset-last-60", color="secondary", outline=True, size="sm"),
+                    ]),
+                ])
+            ], className="mb-3"),
+
             # Warning rendered here from persistent hidden component
             html.Div(id="ob-baseline-warning-visible"),
 
-            dbc.Row([
-                dbc.Col([
-                    html.Label("Options", style=LABEL_STYLE),
-                    dbc.Checklist(
-                        id      = "ob-baseline-options-visible",
-                        options = [
-                            {
-                                "label": "Trigger baseline recompute job now",
-                                "value": "recompute"
-                            },
-                        ],
-                        value   = recompute,
-                        style   = {"color": TEXT_PRIMARY},
+            dbc.Alert([
+                html.Div("After onboarding", style={"fontWeight": "700", "marginBottom": "4px"}),
+                html.Ul([
+                    html.Li(
+                        f"Baseline refreshes automatically on the 1st and 15th using the previous month of data. "
+                        f"Next refresh: {next_refresh} -> window {next_refresh_start} to {next_refresh_end}."
                     ),
-                    html.Small(
-                        "Uncheck to skip baseline computation if "
-                        "baselines already exist for this table.",
-                        style=MUTED_STYLE
+                    html.Li(
+                        f"Daily validation starts {date.today()} (checks data for {first_val_business_date})."
                     ),
-                ]),
+                ], style={"marginBottom": "0px"}),
+            ], color="info", className="mb-3"),
+
+            dbc.Accordion([
+                dbc.AccordionItem([
+                    dbc.Row([
+                        dbc.Col([
+                            html.Label("Data completeness lag (days)", style=LABEL_STYLE),
+                            dbc.Input(
+                                id="ob-baseline-lag-visible",
+                                value=baseline_lag_days,
+                                type="number",
+                                min=1,
+                                step=1,
+                                style={
+                                    "backgroundColor": "#2C2E33",
+                                    "color": TEXT_PRIMARY,
+                                    "border": f"1px solid {BORDER_COLOR}",
+                                },
+                            ),
+                            html.Small("min 1; suggested 14 for late-arriving tables", style=MUTED_STYLE),
+                        ], md=6),
+                        dbc.Col([
+                            html.Label("Validation delay (days)", style=LABEL_STYLE),
+                            dbc.Input(
+                                id="ob-validation-lag-visible",
+                                value=validation_lag_days,
+                                type="number",
+                                min=1,
+                                step=1,
+                                style={
+                                    "backgroundColor": "#2C2E33",
+                                    "color": TEXT_PRIMARY,
+                                    "border": f"1px solid {BORDER_COLOR}",
+                                },
+                            ),
+                            html.Small("min 1; suggested 3 for late-arriving tables", style=MUTED_STYLE),
+                        ], md=6),
+                    ]),
+                ], title="Advanced")
+            ], start_collapsed=True, className="mb-2"),
+
+            html.Div([
+                html.Label("Options", style=LABEL_STYLE),
+                dbc.Checklist(
+                    id="ob-baseline-options-visible",
+                    options=[{"label": "Recompute baseline with the new configuration", "value": "recompute"}],
+                    value=recompute,
+                    style={
+                        "color": TEXT_PRIMARY,
+                        "display": "block" if is_modify_flow else "none",
+                    },
+                ),
+                html.Small(
+                    "Baseline recompute is always triggered for new onboarding.",
+                    style=MUTED_STYLE,
+                ) if not is_modify_flow else html.Div(),
             ]),
         ], style=CARD_STYLE),
 
@@ -1895,6 +2036,10 @@ def build_step5(
         ).days + 1
     except Exception:
         days = 0
+
+    lag_for_refresh = _coerce_min_one_day(bl_lag, DEFAULT_BASELINE_LAG_DAYS)
+    next_refresh = next_refresh_date(date.today(), (1, 15))
+    next_start, next_end = compute_default_window(next_refresh, lag_for_refresh, WINDOW_POLICY_MONTH)
 
     def srow(label, value, color=TEXT_PRIMARY):
         return dbc.Row([
@@ -2116,20 +2261,22 @@ def build_step5(
             html.H6("📊 Baseline Settings",
                     style={"color": TEXT_HEADING, "fontWeight": "700",
                            "marginBottom": "16px"}),
-            srow("Mode", "Last 30 complete days" if bl_mode == BASELINE_MODE_LAST30 else "Custom dates"),
-            srow("Baseline Lag", f"{bl_lag} day(s)"),
-            srow("Validation Lag", f"{val_lag} day(s)"),
-            srow("Start Date",   bl_start),
-            srow("End Date",     bl_end),
+            srow("Mode", "Recommended month-back window" if bl_mode == BASELINE_MODE_LAST30 else "Custom dates"),
+            srow("Data completeness lag", f"{bl_lag} day(s)"),
+            srow("Validation delay", f"{val_lag} day(s)"),
+            srow("Initial window start",   bl_start),
+            srow("Initial window end",     bl_end),
             srow("Window",       f"{days} days",
-                 STEP_COMPLETE if days >= 14 else "#dc3545"),
+                 STEP_COMPLETE if days >= MIN_BASELINE_DAYS_RECOMMENDED else "#dc3545"),
+            srow("Next refresh", f"{next_refresh} ({next_start} to {next_end})"),
+            srow("First validation date", f"{date.today()} (checks {first_validation_business_date(date.today(), val_lag)})"),
             srow("Total Checks", f"{total_checks}"),
             srow("Recompute",    "Yes" if recompute else "No"),
             dbc.Alert(
                 f"⚠️ Only {days} days selected. "
-                f"Minimum 14 days recommended.",
+                f"Minimum {MIN_BASELINE_DAYS_RECOMMENDED} days recommended.",
                 color="warning", className="mb-0 mt-2",
-            ) if days < 14 else html.Div(),
+            ) if days < MIN_BASELINE_DAYS_RECOMMENDED else html.Div(),
         ], style={**CARD_STYLE, "marginBottom": "24px"}),
 
         dbc.Row([
@@ -2291,28 +2438,27 @@ def _trigger_agent1_baseline_job(table_meta: dict, baseline: dict) -> dict:
     )
     mode = baseline.get("baseline_mode", BASELINE_MODE_LAST30)
     run_mode = "CUSTOM" if mode == BASELINE_MODE_CUSTOM else "INITIAL"
+    baseline_start = str(baseline.get("window_start") or "")
+    baseline_end = str(baseline.get("window_end") or "")
+    try:
+        as_of_date = str(date.fromisoformat(baseline_end[:10]) + timedelta(days=1))
+    except Exception:
+        as_of_date = str(date.today())
 
     params = {
         "run_mode": run_mode,
         "table_filter": fqn,
         "run_validation": "false",
+        "baseline_start": baseline_start,
+        "baseline_end": baseline_end,
+        "as_of_date": as_of_date,
     }
-    if run_mode == "CUSTOM":
-        params["baseline_start"] = baseline.get("window_start", "")
-        params["baseline_end"] = baseline.get("window_end", "")
-        try:
-            custom_end = date.fromisoformat((baseline.get("window_end") or "")[:10])
-            params["as_of_date"] = str(custom_end + timedelta(days=1))
-        except Exception:
-            params["as_of_date"] = str(date.today())
+    try:
         params["window_days"] = str(
-            (
-                date.fromisoformat(baseline.get("window_end"))
-                - date.fromisoformat(baseline.get("window_start"))
-            ).days + 1
+            (date.fromisoformat(baseline_end[:10]) - date.fromisoformat(baseline_start[:10])).days + 1
         )
-    else:
-        params["as_of_date"] = str(date.today())
+    except Exception:
+        params["window_days"] = "30"
 
     w = WorkspaceClient()
     run_now = w.jobs.run_now(job_id=int(DS_AGENT1_JOB_ID), job_parameters=params)
@@ -2374,7 +2520,8 @@ def _run_onboarding(
         f"{table_meta['table_name']}"
     )
     tname    = table_meta["table_name"]
-    recompute= baseline.get("recompute", True)
+    is_modify_flow = bool((baseline or {}).get("is_modify_flow", False))
+    recompute = True if not is_modify_flow else bool(baseline.get("recompute", False))
 
     steps   = []
     all_ok  = True
@@ -2631,8 +2778,14 @@ def _run_onboarding(
         _persist_table_lags(
             conn,
             fqn,
-            int(baseline.get("baseline_lag_days", DEFAULT_BASELINE_LAG_DAYS) or DEFAULT_BASELINE_LAG_DAYS),
-            int(baseline.get("validation_lag_days", DEFAULT_VALIDATION_LAG_DAYS) or DEFAULT_VALIDATION_LAG_DAYS),
+            _coerce_min_one_day(
+                baseline.get("baseline_lag_days", DEFAULT_BASELINE_LAG_DAYS),
+                DEFAULT_BASELINE_LAG_DAYS,
+            ),
+            _coerce_min_one_day(
+                baseline.get("validation_lag_days", DEFAULT_VALIDATION_LAG_DAYS),
+                DEFAULT_VALIDATION_LAG_DAYS,
+            ),
         )
     except Exception as e:
         logger.warning(f"Lag persistence skipped: {e}")
@@ -3192,46 +3345,84 @@ def load_date_columns(table, catalog, schema):
 )
 def baseline_warning_visible(mode, lag_days, start, end):
     try:
-        mode = mode or BASELINE_MODE_LAST30
-        lag = max(0, int(lag_days or DEFAULT_BASELINE_LAG_DAYS))
-        if mode == BASELINE_MODE_LAST30:
-            end_dt = date.today() - timedelta(days=lag)
-            start_dt = end_dt - timedelta(days=29)
-        else:
-            if not start or not end:
-                return dbc.Alert(
-                    "Select both custom start and end dates.",
-                    color="warning",
-                    className="mb-3",
-                )
-            start_dt = date.fromisoformat(start)
-            end_dt = date.fromisoformat(end)
-            if start_dt > end_dt:
-                return dbc.Alert(
-                    "Baseline start date must be on or before end date.",
-                    color="danger",
-                    className="mb-3",
-                )
-            if end_dt >= date.today():
-                return dbc.Alert(
-                    "Baseline end date must be before today.",
-                    color="danger",
-                    className="mb-3",
-                )
-        days = (
-            end_dt - start_dt
-        ).days + 1
-        if days < 14:
-            return dbc.Alert(
-                f"⚠️ {days} days selected — minimum 14 recommended.",
-                color="warning", className="mb-3"
-            )
+        status = _window_validation(mode, lag_days, start, end)
+        icon = "✅" if status["color"] == "success" else "⚠️"
         return dbc.Alert(
-            f"✅ {days} days selected — good baseline window ({start_dt} to {end_dt}).",
-            color="success", className="mb-3"
+            f"{icon} {status['message']}",
+            color=status["color"],
+            className="mb-3",
         )
     except Exception:
         return html.Div()
+
+
+@callback(
+    Output("ob-baseline-start-visible", "disabled"),
+    Output("ob-baseline-end-visible", "disabled"),
+    Input("ob-baseline-mode-visible", "value"),
+)
+def toggle_custom_date_inputs(mode):
+    custom_on = (mode or BASELINE_MODE_LAST30) == BASELINE_MODE_CUSTOM
+    return (not custom_on), (not custom_on)
+
+
+@callback(
+    Output("ob-baseline-start-visible", "date", allow_duplicate=True),
+    Output("ob-baseline-end-visible", "date", allow_duplicate=True),
+    Input("ob-baseline-mode-visible", "value"),
+    Input("ob-baseline-lag-visible", "value"),
+    prevent_initial_call=True,
+)
+def sync_option_a_dates(mode, lag_days):
+    if (mode or BASELINE_MODE_LAST30) != BASELINE_MODE_LAST30:
+        return dash.no_update, dash.no_update
+    start_dt, end_dt = _compute_option_a_window(lag_days)
+    return str(start_dt), str(end_dt)
+
+
+@callback(
+    Output("ob-baseline-start-visible", "max_date_allowed"),
+    Output("ob-baseline-end-visible", "max_date_allowed"),
+    Input("ob-baseline-lag-visible", "value"),
+)
+def sync_custom_date_max_allowed(lag_days):
+    lag = _coerce_min_one_day(lag_days, DEFAULT_BASELINE_LAG_DAYS)
+    max_allowed = str(date.today() - timedelta(days=lag))
+    return max_allowed, max_allowed
+
+
+@callback(
+    Output("ob-baseline-start-visible", "date", allow_duplicate=True),
+    Output("ob-baseline-end-visible", "date", allow_duplicate=True),
+    Input("ob-preset-prev-month", "n_clicks"),
+    Input("ob-preset-last-30", "n_clicks"),
+    Input("ob-preset-last-60", "n_clicks"),
+    State("ob-baseline-lag-visible", "value"),
+    prevent_initial_call=True,
+)
+def apply_date_presets(n_prev, n_30, n_60, lag_days):
+    trig = ctx.triggered_id
+    lag = _coerce_min_one_day(lag_days, DEFAULT_BASELINE_LAG_DAYS)
+    _, end_dt = _compute_option_a_window(lag)
+    if trig == "ob-preset-last-60":
+        start_dt = end_dt - timedelta(days=59)
+    elif trig == "ob-preset-prev-month":
+        start_dt, end_dt = _compute_option_a_window(lag)
+    else:
+        start_dt = end_dt - timedelta(days=29)
+    return str(start_dt), str(end_dt)
+
+
+@callback(
+    Output("ob-next-4-visible", "disabled"),
+    Input("ob-baseline-mode-visible", "value"),
+    Input("ob-baseline-lag-visible", "value"),
+    Input("ob-baseline-start-visible", "date"),
+    Input("ob-baseline-end-visible", "date"),
+)
+def disable_review_for_invalid_baseline(mode, lag_days, start, end):
+    status = _window_validation(mode, lag_days, start, end)
+    return not status["valid"]
 
 
 @callback(
@@ -3375,7 +3566,7 @@ def sync_baseline_mode(mode):
 )
 def sync_baseline_lag_days(val):
     try:
-        return max(0, int(val))
+        return max(1, int(val))
     except Exception:
         return DEFAULT_BASELINE_LAG_DAYS
 
@@ -3387,7 +3578,7 @@ def sync_baseline_lag_days(val):
 )
 def sync_validation_lag_days(val):
     try:
-        return max(0, int(val))
+        return max(1, int(val))
     except Exception:
         return DEFAULT_VALIDATION_LAG_DAYS
 
@@ -3683,17 +3874,21 @@ def bulk_toggle_nested(_on, _off, current):
 @callback(
     Output("ob-step",         "data",     allow_duplicate=True),
     Output("ob-table-checks", "data",     allow_duplicate=True),
+    Output("ob-baseline",     "data",     allow_duplicate=True),
     Output("ob-alert",        "children", allow_duplicate=True),
     Input("ob-next-3",        "n_clicks"),
     State({"type": "ob-tbl-check-enabled", "index": ALL}, "value"),
     State({"type": "ob-tbl-check-enabled", "index": ALL}, "id"),
     State({"type": "ob-tbl-check-warn",    "index": ALL}, "value"),
     State({"type": "ob-tbl-check-crit",    "index": ALL}, "value"),
+    State("ob-col-config",    "data"),
+    State("ob-baseline",      "data"),
     prevent_initial_call=True,
 )
 def next_step3(
     n_clicks,
     tbl_en_vals, tbl_en_ids, tbl_warn_vals, tbl_crit_vals,
+    col_config, baseline,
 ):
     if not n_clicks:
         raise dash.exceptions.PreventUpdate
@@ -3719,7 +3914,18 @@ def next_step3(
             ),
         }
 
-    return 4, new_tbl, html.Div()
+    baseline_data = dict(baseline or {})
+    if baseline_data.get("is_modify_flow"):
+        old_cols = baseline_data.get("_original_col_config") or {}
+        old_tbl = baseline_data.get("_original_table_checks") or {}
+        changed = (
+            json.dumps(old_cols, sort_keys=True, default=str) != json.dumps(col_config or {}, sort_keys=True, default=str)
+            or json.dumps(old_tbl, sort_keys=True, default=str) != json.dumps(new_tbl, sort_keys=True, default=str)
+        )
+        baseline_data["recompute"] = bool(changed)
+        baseline_data["recompute_checked"] = ["recompute"] if changed else []
+
+    return 4, new_tbl, baseline_data, html.Div()
 
 
 # ── Next 4 → 5 ────────────────────────────────────────────────────────────
@@ -3735,53 +3941,30 @@ def next_step3(
     State("ob-baseline-start",   "date"),
     State("ob-baseline-end",     "date"),
     State("ob-baseline-options", "value"),
+    State("ob-baseline",         "data"),
     prevent_initial_call=True,
 )
-def next_step4(n_clicks, mode, bl_lag_days, val_lag_days, bl_start, bl_end, bl_options):
+def next_step4(n_clicks, mode, bl_lag_days, val_lag_days, bl_start, bl_end, bl_options, baseline_state):
     if not n_clicks:
         raise dash.exceptions.PreventUpdate
 
     mode = mode or BASELINE_MODE_LAST30
 
-    try:
-        baseline_lag_days = max(0, int(bl_lag_days or DEFAULT_BASELINE_LAG_DAYS))
-    except Exception:
-        baseline_lag_days = DEFAULT_BASELINE_LAG_DAYS
+    baseline_lag_days = _coerce_min_one_day(bl_lag_days, DEFAULT_BASELINE_LAG_DAYS)
+    validation_lag_days = _coerce_min_one_day(val_lag_days, DEFAULT_VALIDATION_LAG_DAYS)
 
-    try:
-        validation_lag_days = max(0, int(val_lag_days or DEFAULT_VALIDATION_LAG_DAYS))
-    except Exception:
-        validation_lag_days = DEFAULT_VALIDATION_LAG_DAYS
+    status = _window_validation(mode, baseline_lag_days, bl_start, bl_end)
+    if not status["valid"]:
+        return (
+            dash.no_update,
+            dash.no_update,
+            error_alert(status["message"]),
+        )
 
-    if mode == BASELINE_MODE_LAST30:
-        end_dt = date.today() - timedelta(days=baseline_lag_days)
-        start_dt = end_dt - timedelta(days=29)
-        bl_start = str(start_dt)
-        bl_end = str(end_dt)
-    else:
-        if not bl_start or not bl_end:
-            return (
-                dash.no_update, dash.no_update,
-                error_alert("Please select baseline start and end dates.")
-            )
-        try:
-            start_dt = date.fromisoformat(bl_start)
-            end_dt = date.fromisoformat(bl_end)
-        except Exception:
-            return (
-                dash.no_update, dash.no_update,
-                error_alert("Baseline dates must be valid ISO dates (YYYY-MM-DD).")
-            )
-        if start_dt > end_dt:
-            return (
-                dash.no_update, dash.no_update,
-                error_alert("Baseline start date must be on or before end date.")
-            )
-        if end_dt >= date.today():
-            return (
-                dash.no_update, dash.no_update,
-                error_alert("Baseline end date must be before today.")
-            )
+    start_dt = status["start"]
+    end_dt = status["end"]
+    bl_start = str(start_dt)
+    bl_end = str(end_dt)
 
     new_bl = {
         "baseline_mode"    : mode,
@@ -3791,6 +3974,7 @@ def next_step4(n_clicks, mode, bl_lag_days, val_lag_days, bl_start, bl_end, bl_o
         "window_end"       : bl_end,
         "recompute"        : "recompute" in (bl_options or []),
         "recompute_checked": bl_options or [],
+        "is_modify_flow"   : bool((baseline_state or {}).get("is_modify_flow", False)),
     }
     return 5, new_bl, html.Div()
 
@@ -3962,22 +4146,26 @@ def handle_modify(n_clicks, table_meta, existing):
                 "crit": row.get("critical_threshold"),
             }
 
+        m_start, m_end = _compute_option_a_window(DEFAULT_BASELINE_LAG_DAYS)
         baseline = {
             "baseline_mode": BASELINE_MODE_LAST30,
             "baseline_lag_days": DEFAULT_BASELINE_LAG_DAYS,
             "validation_lag_days": DEFAULT_VALIDATION_LAG_DAYS,
-            "window_start": str(date.today() - timedelta(days=30)),
-            "window_end": str(date.today() - timedelta(days=1)),
-            "recompute": True,
-            "recompute_checked": ["recompute"],
+            "window_start": str(m_start),
+            "window_end": str(m_end),
+            "recompute": False,
+            "recompute_checked": [],
+            "is_modify_flow": True,
+            "_original_col_config": col_config,
+            "_original_table_checks": table_checks,
         }
 
         if not df_table.empty:
             row = df_table.iloc[0]
             if "baseline_lag_days" in df_table.columns and row.get("baseline_lag_days") is not None:
-                baseline["baseline_lag_days"] = int(row.get("baseline_lag_days"))
+                baseline["baseline_lag_days"] = _coerce_min_one_day(row.get("baseline_lag_days"), DEFAULT_BASELINE_LAG_DAYS)
             if "validation_lag_days" in df_table.columns and row.get("validation_lag_days") is not None:
-                baseline["validation_lag_days"] = int(row.get("validation_lag_days"))
+                baseline["validation_lag_days"] = _coerce_min_one_day(row.get("validation_lag_days"), DEFAULT_VALIDATION_LAG_DAYS)
 
         try:
             df_latest_baseline = execute_query(
