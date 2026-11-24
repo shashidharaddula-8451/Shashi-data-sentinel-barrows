@@ -11,6 +11,7 @@ import time
 from databricks.sdk import WorkspaceClient
 from config.settings import (
     TARGET_CATALOG, TARGET_SCHEMA,
+    DATABRICKS_HOST, DATABRICKS_TOKEN,
     COLUMN_LEVEL_VALIDATIONS,
     COLUMN_CHECKS_BY_TYPE,
     TYPE_FAMILY,
@@ -194,10 +195,11 @@ BASELINE_MODE_LAST30 = "LAST_30_COMPLETE_DAYS"
 BASELINE_MODE_CUSTOM = "CUSTOM_DATES"
 DEFAULT_BASELINE_LAG_DAYS = 1
 DEFAULT_VALIDATION_LAG_DAYS = 1
-MIN_BASELINE_DAYS_RECOMMENDED = 14
+MIN_BASELINE_DAYS_RECOMMENDED = 15
 MAX_BASELINE_DAYS_ALLOWED = 90
 
-DS_AGENT1_JOB_ID = os.environ.get("DS_AGENT1_JOB_ID", "").strip()
+DS_AGENT1_BASELINE_JOB_ID = os.environ.get("DS_AGENT1_BASELINE_JOB_ID", "").strip()
+DS_AGENT1_VALIDATION_JOB_ID = os.environ.get("DS_AGENT1_VALIDATION_JOB_ID", "").strip()
 JOB_POLL_INTERVAL_SECONDS = 10
 JOB_POLL_TIMEOUT_SECONDS = 300
 
@@ -1104,6 +1106,13 @@ def layout():
             content_class_name = "ob-exec-modal-content",
         ),
 
+        dcc.Interval(
+            id="ob-baseline-poll-interval",
+            interval=5000,
+            n_intervals=0,
+            disabled=True,
+        ),
+
         # ── Visible content wrapper ────────────────────────────────────────
         html.Div([
 
@@ -1815,10 +1824,7 @@ def build_step4(prefill: dict = None) -> html.Div:
         baseline_lag_days,
         WINDOW_POLICY_MONTH,
     )
-    first_val_business_date = first_validation_business_date(
-        date.today(),
-        validation_lag_days,
-    )
+    first_val_business_date = auto_end_dt + timedelta(days=1)
 
     return html.Div([
         html.Div([
@@ -1828,8 +1834,7 @@ def build_step4(prefill: dict = None) -> html.Div:
                        "marginBottom": "4px"}
             ),
             html.P(
-                "Choose how baseline windows are derived and save lag-day settings "
-                "used for baseline/validation scheduling.",
+                "Choose the initial baseline window. Later baselines refresh automatically on the 1st and 15th.",
                 style=MUTED_STYLE
             ),
         ], style={"marginBottom": "24px"}),
@@ -1846,7 +1851,7 @@ def build_step4(prefill: dict = None) -> html.Div:
                                 "value": BASELINE_MODE_LAST30,
                             },
                             {
-                                "label": "Option B — Custom date range",
+                                "label": "Custom date range",
                                 "value": BASELINE_MODE_CUSTOM,
                             },
                         ],
@@ -1857,7 +1862,7 @@ def build_step4(prefill: dict = None) -> html.Div:
                     html.Small(
                         f"Recommended window computes {auto_start_dt} to {auto_end_dt} from lag.",
                         style=MUTED_STYLE,
-                    ),
+                    ) if baseline_mode == BASELINE_MODE_LAST30 else html.Div(),
                 ], md=12),
             ], className="mb-3"),
 
@@ -1915,7 +1920,7 @@ def build_step4(prefill: dict = None) -> html.Div:
                         f"Next refresh: {next_refresh} -> window {next_refresh_start} to {next_refresh_end}."
                     ),
                     html.Li(
-                        f"Daily validation starts {date.today()} (checks data for {first_val_business_date})."
+                        f"Daily validation starts {first_val_business_date} (checks data for {auto_end_dt})."
                     ),
                 ], style={"marginBottom": "0px"}),
             ], color="info", className="mb-3"),
@@ -2036,6 +2041,11 @@ def build_step5(
         ).days + 1
     except Exception:
         days = 0
+
+    try:
+        first_validation_dt = date.fromisoformat(str(bl_end)[:10]) + timedelta(days=1)
+    except Exception:
+        first_validation_dt = date.today()
 
     lag_for_refresh = _coerce_min_one_day(bl_lag, DEFAULT_BASELINE_LAG_DAYS)
     next_refresh = next_refresh_date(date.today(), (1, 15))
@@ -2269,7 +2279,7 @@ def build_step5(
             srow("Window",       f"{days} days",
                  STEP_COMPLETE if days >= MIN_BASELINE_DAYS_RECOMMENDED else "#dc3545"),
             srow("Next refresh", f"{next_refresh} ({next_start} to {next_end})"),
-            srow("First validation date", f"{date.today()} (checks {first_validation_business_date(date.today(), val_lag)})"),
+            srow("First validation date", f"{first_validation_dt} (checks {bl_end})"),
             srow("Total Checks", f"{total_checks}"),
             srow("Recompute",    "Yes" if recompute else "No"),
             dbc.Alert(
@@ -2424,11 +2434,101 @@ def _persist_table_lags(conn, fqn: str, baseline_lag_days: int, validation_lag_d
     )
 
 
+def _active_config_counts(conn, fqn: str) -> dict:
+    counts = {}
+    for key, table_name in [
+        ("columns", "uc1_column_registry_b"),
+        ("column_validations", "uc1_column_validation_registry_b"),
+        ("table_validations", "uc1_table_validation_registry_b"),
+    ]:
+        df = execute_query(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM {PREFIX}{table_name}
+            WHERE fully_qualified_name = :fqn
+              AND is_active = true
+            """,
+            {"fqn": fqn},
+            conn=conn,
+        )
+        counts[key] = int(df.iloc[0]["c"]) if not df.empty else 0
+    return counts
+
+
+def _workspace_client_pat() -> WorkspaceClient:
+    return WorkspaceClient(
+        host=DATABRICKS_HOST,
+        token=DATABRICKS_TOKEN,
+        auth_type="pat",
+    )
+
+
+def _persist_last_baseline_run_id(fqn: str, run_id: str, conn=None):
+    execute_write(
+        f"""
+        UPDATE {PREFIX}uc1_table_registry_b
+        SET last_baseline_run_id = :run_id
+        WHERE fully_qualified_name = :fqn
+        """,
+        {"run_id": str(run_id), "fqn": fqn},
+        conn=conn,
+    )
+
+
+def _first_error_line(text: str) -> str:
+    txt = (text or "").strip()
+    if not txt:
+        return ""
+    return txt.splitlines()[0][:300]
+
+
+def _render_baseline_modal_status(status: dict) -> html.Div:
+    st = status or {}
+    fqn = st.get("fqn", "")
+    registry_ok = bool(st.get("registry_ok", False))
+    run_id = st.get("baseline_run_id")
+    run_url = st.get("baseline_run_url")
+    life_cycle = st.get("baseline_life_cycle", "")
+    result_state = st.get("baseline_result_state", "")
+    err = st.get("baseline_error", "")
+
+    rows = [
+        dbc.Alert("Registry saved ✓" if registry_ok else "Registry save failed.", color="success" if registry_ok else "danger", className="mb-2")
+    ]
+
+    if run_id:
+        status_text = f"Baseline job run {run_id}"
+        if life_cycle:
+            status_text += f" · {life_cycle}"
+        if result_state:
+            status_text += f" / {result_state}"
+        rows.append(dbc.Alert([
+            html.Div("Baseline job queued/running", style={"fontWeight": "700"}),
+            html.Div(status_text),
+            html.A("Open run", href=run_url, target="_blank") if run_url else html.Div(),
+        ], color="info" if life_cycle not in {"TERMINATED", "INTERNAL_ERROR", "SKIPPED"} else ("success" if result_state == "SUCCESS" else "danger"), className="mb-2"))
+
+    if err:
+        rows.append(dbc.Alert(f"Baseline error: {err}", color="danger", className="mb-2"))
+
+    rows.append(
+        dbc.Button(
+            "Retry baseline",
+            id="ob-retry-baseline-btn",
+            color="warning",
+            size="sm",
+            style={"display": "inline-block" if st.get("can_retry", False) else "none"},
+        )
+    )
+
+    return html.Div(rows)
+
+
 def _trigger_agent1_baseline_job(table_meta: dict, baseline: dict) -> dict:
-    if not DS_AGENT1_JOB_ID:
+    if not DS_AGENT1_BASELINE_JOB_ID:
         return {
             "ok": False,
-            "message": "DS_AGENT1_JOB_ID is not configured.",
+            "message": "DS_AGENT1_BASELINE_JOB_ID is not configured.",
         }
 
     fqn = (
@@ -2448,20 +2548,13 @@ def _trigger_agent1_baseline_job(table_meta: dict, baseline: dict) -> dict:
     params = {
         "run_mode": run_mode,
         "table_filter": fqn,
-        "run_validation": "false",
         "baseline_start": baseline_start,
         "baseline_end": baseline_end,
         "as_of_date": as_of_date,
     }
-    try:
-        params["window_days"] = str(
-            (date.fromisoformat(baseline_end[:10]) - date.fromisoformat(baseline_start[:10])).days + 1
-        )
-    except Exception:
-        params["window_days"] = "30"
 
-    w = WorkspaceClient()
-    run_now = w.jobs.run_now(job_id=int(DS_AGENT1_JOB_ID), job_parameters=params)
+    w = _workspace_client_pat()
+    run_now = w.jobs.run_now(job_id=int(DS_AGENT1_BASELINE_JOB_ID), job_parameters=params)
     run_id_raw = (
         getattr(run_now, "run_id", None)
         or getattr(getattr(run_now, "response", None), "run_id", None)
@@ -2473,35 +2566,14 @@ def _trigger_agent1_baseline_job(table_meta: dict, baseline: dict) -> dict:
         }
     run_id = int(run_id_raw)
 
-    deadline = time.time() + JOB_POLL_TIMEOUT_SECONDS
-    while True:
-        run_info = w.jobs.get_run(run_id=run_id)
-        state = run_info.state
-        life_cycle_raw = getattr(state, "life_cycle_state", None) if state is not None else None
-        result_state_raw = getattr(state, "result_state", None) if state is not None else None
-        life_cycle = getattr(life_cycle_raw, "value", str(life_cycle_raw or ""))
-        result_state = getattr(result_state_raw, "value", str(result_state_raw or ""))
-        if life_cycle in {
-            "TERMINATED", "INTERNAL_ERROR", "SKIPPED",
-        }:
-            break
-        if time.time() >= deadline:
-            return {
-                "ok": False,
-                "run_id": run_id,
-                "run_url": run_info.run_page_url,
-                "message": "Timed out while waiting for Agent1 baseline job result.",
-            }
-        time.sleep(JOB_POLL_INTERVAL_SECONDS)
+    run_url = f"https://{DATABRICKS_HOST}/jobs/{DS_AGENT1_BASELINE_JOB_ID}/runs/{run_id}" if DATABRICKS_HOST else None
 
-    ok = result_state == "SUCCESS"
     return {
-        "ok": ok,
+        "ok": True,
         "run_id": run_id,
-        "run_url": run_info.run_page_url,
-        "life_cycle_state": life_cycle,
-        "result_state": result_state,
-        "message": "Baseline recompute job completed." if ok else "Baseline recompute job failed.",
+        "run_url": run_url,
+        "job_parameters": params,
+        "message": "Baseline recompute job queued.",
     }
 
 def _run_onboarding(
@@ -2538,63 +2610,141 @@ def _run_onboarding(
     # and leave the review page's spinner hanging with no visible error.
     conn = get_connection()
 
-    # ── Step A: Register table ─────────────────────────────────────────────
-    try:
-        execute_write(
-            f"""
-            INSERT INTO {PREFIX}uc1_table_registry_b (
-                table_id,
-                table_catalog,
-                table_schema,
-                table_name,
-                fully_qualified_name,
-                source_type,
-                ingestion_pattern,
-                ingestion_frequency,
-                business_date_column,
-                is_active,
-                registered_timestamp,
-                registered_by
-            ) VALUES (
-                :table_id,
-                :table_catalog,
-                :table_schema,
-                :table_name,
-                :fully_qualified_name,
-                :source_type,
-                :ingestion_pattern,
-                :ingestion_frequency,
-                :business_date_column,
-                true,
-                current_timestamp(),
-                'onboarding_wizard'
-            )
+    existing_active_registration = False
+    old_counts = {"columns": 0, "column_validations": 0, "table_validations": 0}
+    new_counts = dict(old_counts)
+    insert_failed_tables = []
+
+    # Batch timestamp is captured once before any insert in this run.
+    ts_df = execute_query("SELECT current_timestamp() AS ts", conn=conn)
+    batch_ts = ts_df.iloc[0]["ts"]
+
+    existing_df = execute_query(
+        f"""
+        SELECT 1
+        FROM {PREFIX}uc1_table_registry_b
+        WHERE fully_qualified_name = :fqn
+          AND is_active = true
+        LIMIT 1
         """,
-            {
-                "table_id": str(uuid.uuid4()),
-                "table_catalog": table_meta.get("catalog", TARGET_CATALOG),
-                "table_schema": table_meta.get("schema", TARGET_SCHEMA),
-                "table_name": tname,
-                "fully_qualified_name": fqn,
-                "source_type": table_meta.get("ingestion_type", "FILE"),
-                "ingestion_pattern": table_meta.get("layer", "BRONZE"),
-                "ingestion_frequency": table_meta.get("ingestion_frequency", "DAILY"),
-                "business_date_column": (
-                    table_meta.get("date_column", "")
-                    if table_meta.get("date_column") != _NO_DATE_COL_VALUE
-                    else ""
-                ),
-            },
-            conn=conn,
-        )
+        {"fqn": fqn},
+        conn=conn,
+    )
+    existing_active_registration = not existing_df.empty
+    if existing_active_registration:
+        old_counts = _active_config_counts(conn, fqn)
+
+    # ── Step A: Register or modify table registry row ──────────────────────
+    try:
+        table_params = {
+            "fqn": fqn,
+            "table_catalog": table_meta.get("catalog", TARGET_CATALOG),
+            "table_schema": table_meta.get("schema", TARGET_SCHEMA),
+            "table_name": tname,
+            "source_type": table_meta.get("ingestion_type", "FILE"),
+            "ingestion_pattern": table_meta.get("layer", "BRONZE"),
+            "ingestion_frequency": table_meta.get("ingestion_frequency", "DAILY"),
+            "business_date_column": (
+                table_meta.get("date_column", "")
+                if table_meta.get("date_column") != _NO_DATE_COL_VALUE
+                else ""
+            ),
+            "baseline_lag_days": _coerce_min_one_day(
+                baseline.get("baseline_lag_days", DEFAULT_BASELINE_LAG_DAYS),
+                DEFAULT_BASELINE_LAG_DAYS,
+            ),
+            "validation_lag_days": _coerce_min_one_day(
+                baseline.get("validation_lag_days", DEFAULT_VALIDATION_LAG_DAYS),
+                DEFAULT_VALIDATION_LAG_DAYS,
+            ),
+        }
+        table_params["bl_lag"] = table_params["baseline_lag_days"]
+        table_params["val_lag"] = table_params["validation_lag_days"]
+
+        table_cols = _table_columns(f"{PREFIX}uc1_table_registry_b", conn=conn)
+        if existing_active_registration:
+            set_parts = [
+                "table_catalog = :table_catalog",
+                "table_schema = :table_schema",
+                "table_name = :table_name",
+                "source_type = :source_type",
+                "ingestion_pattern = :ingestion_pattern",
+                "ingestion_frequency = :ingestion_frequency",
+                "business_date_column = :business_date_column",
+                "registered_timestamp = current_timestamp()",
+            ]
+            if "baseline_lag_days" in table_cols:
+                set_parts.append("baseline_lag_days = :bl_lag")
+            if "validation_lag_days" in table_cols:
+                set_parts.append("validation_lag_days = :val_lag")
+            if "change_reason" in table_cols:
+                set_parts.append("change_reason = 'modify'")
+
+            execute_write(
+                f"""
+                UPDATE {PREFIX}uc1_table_registry_b
+                SET {', '.join(set_parts)}
+                WHERE fully_qualified_name = :fqn
+                  AND is_active = true
+                """,
+                table_params,
+                conn=conn,
+            )
+        else:
+            insert_cols = [
+                "table_id",
+                "table_catalog",
+                "table_schema",
+                "table_name",
+                "fully_qualified_name",
+                "source_type",
+                "ingestion_pattern",
+                "ingestion_frequency",
+                "business_date_column",
+                "is_active",
+                "registered_timestamp",
+                "registered_by",
+            ]
+            insert_vals = [
+                ":table_id",
+                ":table_catalog",
+                ":table_schema",
+                ":table_name",
+                ":fqn",
+                ":source_type",
+                ":ingestion_pattern",
+                ":ingestion_frequency",
+                ":business_date_column",
+                "true",
+                "current_timestamp()",
+                "'onboarding_wizard'",
+            ]
+            if "baseline_lag_days" in table_cols:
+                insert_cols.append("baseline_lag_days")
+                insert_vals.append(":baseline_lag_days")
+            if "validation_lag_days" in table_cols:
+                insert_cols.append("validation_lag_days")
+                insert_vals.append(":validation_lag_days")
+
+            execute_write(
+                f"""
+                INSERT INTO {PREFIX}uc1_table_registry_b (
+                    {', '.join(insert_cols)}
+                ) VALUES (
+                    {', '.join(insert_vals)}
+                )
+                """,
+                {**table_params, "table_id": str(uuid.uuid4())},
+                conn=conn,
+            )
         steps.append({
-            "label" : "Table registered in registry",
+            "label" : "Table registry updated",
             "state" : "done",
-            "detail": fqn,
+            "detail": f"{fqn} ({'modify' if existing_active_registration else 'new'})",
         })
     except Exception as e:
         steps.append({
-            "label" : "Table registration",
+            "label" : "Table registry update",
             "state" : "error",
             "detail": str(e)[:120],
         })
@@ -2645,6 +2795,7 @@ def _run_onboarding(
             col_count = len(col_config)
         except Exception as e:
             col_err.append(str(e)[:120])
+            insert_failed_tables.append("uc1_column_registry_b")
 
     if col_err:
         all_ok = False
@@ -2705,6 +2856,7 @@ def _run_onboarding(
             val_count = i
         except Exception as e:
             val_err.append(str(e)[:120])
+            insert_failed_tables.append("uc1_column_validation_registry_b")
 
     if val_err:
         all_ok = False
@@ -2761,6 +2913,7 @@ def _run_onboarding(
             tval_count = i
         except Exception as e:
             tval_err.append(str(e)[:120])
+            insert_failed_tables.append("uc1_table_validation_registry_b")
 
     if tval_err:
         all_ok = False
@@ -2773,7 +2926,52 @@ def _run_onboarding(
         ),
     })
 
-    # ── Step E: Baseline handling moved to Agent1 job ─────────────────────
+    # ── Step E: Replace previous active config only after successful inserts ──
+    if existing_active_registration:
+        if insert_failed_tables:
+            all_ok = False
+            steps.append({
+                "label": "Replaced previous configuration",
+                "state": "error",
+                "detail": "Skipped deactivation due to insert failures: "
+                          + ", ".join(insert_failed_tables),
+            })
+        else:
+            for table_name in [
+                "uc1_column_registry_b",
+                "uc1_column_validation_registry_b",
+                "uc1_table_validation_registry_b",
+            ]:
+                execute_write(
+                    f"""
+                    UPDATE {PREFIX}{table_name}
+                    SET is_active = false
+                    WHERE fully_qualified_name = :fqn
+                      AND is_active = true
+                      AND created_timestamp < :batch_ts
+                    """,
+                    {"fqn": fqn, "batch_ts": batch_ts},
+                    conn=conn,
+                )
+
+            new_counts = _active_config_counts(conn, fqn)
+            steps.append({
+                "label": "Replaced previous configuration",
+                "state": "done",
+                "detail": (
+                    f"Columns {old_counts['columns']}→{new_counts['columns']} | "
+                    f"Column validations {old_counts['column_validations']}→{new_counts['column_validations']} | "
+                    f"Table validations {old_counts['table_validations']}→{new_counts['table_validations']}"
+                ),
+            })
+    else:
+        steps.append({
+            "label": "Replaced previous configuration",
+            "state": "done",
+            "detail": "Not needed for new table registration.",
+        })
+
+    # ── Step F: Baseline handling moved to Agent1 job ─────────────────────
     try:
         _persist_table_lags(
             conn,
@@ -2902,6 +3100,7 @@ def open_exec_modal(n_clicks, table_meta):
 @callback(
     Output("ob-exec-modal-body", "children", allow_duplicate=True),
     Output("ob-exec-status",     "data",     allow_duplicate=True),
+    Output("ob-baseline-poll-interval", "disabled", allow_duplicate=True),
     Input("ob-exec-status",      "data"),
     State("ob-table-meta",   "data"),
     State("ob-col-config",   "data"),
@@ -2923,217 +3122,163 @@ def run_onboarding(
     tname = table_meta.get("table_name", "")
     fqn   = table_meta.get("fqn", "")
 
-    # Run onboarding
+    # Run onboarding registry/config writes
     results = _run_onboarding(
         table_meta, col_config, table_checks, baseline
     )
 
-    steps      = results.get("steps",     [])
-    ok         = results.get("all_ok",    False)
-    col_count  = results.get("col_count",  0)
-    val_count  = results.get("val_count",  0)
-    tval_count = results.get("tval_count", 0)
-    bl_count   = results.get("bl_count",   0)
+    ok = bool(results.get("all_ok", False))
+    out_status = {
+        "pending": False,
+        "fqn": fqn,
+        "registry_ok": ok,
+        "can_retry": False,
+        "baseline_run_active": False,
+    }
 
-    job_result = None
-    if ok and baseline and baseline.get("recompute", True):
+    should_queue_baseline = ok and baseline and (
+        True if not bool((baseline or {}).get("is_modify_flow", False))
+        else bool((baseline or {}).get("recompute", False))
+    )
+
+    if should_queue_baseline:
         try:
             job_result = _trigger_agent1_baseline_job(table_meta, baseline)
-            results["agent1_job"] = job_result
             if job_result.get("ok"):
-                steps.append({
-                    "label": "Agent1 baseline recompute",
-                    "state": "done",
-                    "detail": (
-                        f"Run {job_result.get('run_id')} finished "
-                        f"with {job_result.get('result_state', 'SUCCESS')}."
-                    ),
+                _persist_last_baseline_run_id(fqn, str(job_result.get("run_id")))
+                out_status.update({
+                    "baseline_run_id": job_result.get("run_id"),
+                    "baseline_run_url": job_result.get("run_url"),
+                    "baseline_job_parameters": job_result.get("job_parameters", {}),
+                    "baseline_run_active": True,
                 })
             else:
-                ok = False
-                steps.append({
-                    "label": "Agent1 baseline recompute",
-                    "state": "error",
-                    "detail": job_result.get("message", "Job trigger failed."),
+                out_status.update({
+                    "baseline_error": job_result.get("message", "Job trigger failed."),
+                    "can_retry": True,
                 })
         except Exception as e:
-            ok = False
-            steps.append({
-                "label": "Agent1 baseline recompute",
-                "state": "error",
-                "detail": str(e)[:120],
+            out_status.update({
+                "baseline_error": str(e),
+                "can_retry": True,
             })
+    modal_body = _render_baseline_modal_status(out_status)
+    return modal_body, out_status, (not out_status.get("baseline_run_active", False))
 
-    done_count = sum(1 for s in steps
-                     if s.get("state") in ("done", "error"))
-    pct = int((done_count / len(steps)) * 100) if steps else 100
 
-    # Build step rows
-    step_rows = []
-    for s in steps:
-        state  = s.get("state",  "pending")
-        label  = s.get("label",  "")
-        detail = s.get("detail", "")
+@callback(
+    Output("ob-exec-modal-body", "children", allow_duplicate=True),
+    Output("ob-exec-status", "data", allow_duplicate=True),
+    Output("ob-baseline-poll-interval", "disabled", allow_duplicate=True),
+    Input("ob-baseline-poll-interval", "n_intervals"),
+    State("ob-exec-status", "data"),
+    prevent_initial_call=True,
+)
+def poll_baseline_job(_n, status):
+    st = dict(status or {})
+    if not st.get("baseline_run_active"):
+        raise dash.exceptions.PreventUpdate
 
-        if state == "done":
-            icon       = "✅"
-            icon_color = STEP_COMPLETE
-            lbl_color  = TEXT_PRIMARY
-            row_bg     = "rgba(0, 200, 81, 0.08)"
-        elif state == "error":
-            icon       = "❌"
-            icon_color = "#dc3545"
-            lbl_color  = "#dc3545"
-            row_bg     = "rgba(220, 53, 69, 0.08)"
-        else:
-            icon       = "○"
-            icon_color = STEP_INACTIVE
-            lbl_color  = TEXT_MUTED
-            row_bg     = PAGE_BG
+    run_id = st.get("baseline_run_id")
+    if not run_id:
+        st["baseline_run_active"] = False
+        st["can_retry"] = True
+        st["baseline_error"] = "Missing run id for baseline poll."
+        return _render_baseline_modal_status(st), st, True
 
-        step_rows.append(
-            html.Div([
-                dbc.Row([
-                    dbc.Col(
-                        html.Span(icon,
-                                  style={"fontSize"   : "18px",
-                                         "color"      : icon_color,
-                                         "marginRight": "8px"}),
-                        md=1,
-                        style={"display"   : "flex",
-                               "alignItems": "center"}
-                    ),
-                    dbc.Col([
-                        html.Div(label,
-                                 style={"fontWeight": "600",
-                                        "color"     : lbl_color,
-                                        "fontSize"  : "13px"}),
-                        html.Small(detail,
-                                   style={"color"   : TEXT_MUTED,
-                                          "fontSize": "11px"}),
-                    ], md=11),
-                ], className="align-items-center"),
-            ], style={
-                "padding"        : "10px 16px",
-                "borderBottom"   : f"1px solid {BORDER_COLOR}",
-                "backgroundColor": row_bg,
-            })
+    try:
+        w = _workspace_client_pat()
+        run_info = w.jobs.get_run(run_id=int(run_id))
+        state = getattr(run_info, "state", None)
+        life_cycle_raw = getattr(state, "life_cycle_state", None) if state is not None else None
+        result_state_raw = getattr(state, "result_state", None) if state is not None else None
+        life_cycle = getattr(life_cycle_raw, "value", str(life_cycle_raw or ""))
+        result_state = getattr(result_state_raw, "value", str(result_state_raw or ""))
+
+        st["baseline_life_cycle"] = life_cycle
+        st["baseline_result_state"] = result_state
+        st["baseline_run_url"] = getattr(run_info, "run_page_url", st.get("baseline_run_url"))
+
+        if life_cycle in {"TERMINATED", "INTERNAL_ERROR", "SKIPPED"}:
+            st["baseline_run_active"] = False
+            if result_state != "SUCCESS":
+                failed_task = None
+                for t in (getattr(run_info, "tasks", None) or []):
+                    t_state = getattr(t, "state", None)
+                    t_result_raw = getattr(t_state, "result_state", None) if t_state is not None else None
+                    t_result = getattr(t_result_raw, "value", str(t_result_raw or ""))
+                    if t_result and t_result != "SUCCESS":
+                        failed_task = t
+                        break
+                failed_task_key = getattr(failed_task, "task_key", "") if failed_task else ""
+                task_state = getattr(failed_task, "state", None) if failed_task else None
+                task_msg = getattr(task_state, "state_message", "") if task_state is not None else ""
+                run_msg = getattr(state, "state_message", "") if state is not None else ""
+                first_line = _first_error_line(task_msg or run_msg)
+                st["baseline_error"] = (
+                    f"Failed task: {failed_task_key}. {first_line}".strip()
+                )
+                st["can_retry"] = True
+
+        return _render_baseline_modal_status(st), st, (not st.get("baseline_run_active", False))
+
+    except Exception as e:
+        st["baseline_run_active"] = False
+        st["can_retry"] = True
+        st["baseline_error"] = str(e)
+        return _render_baseline_modal_status(st), st, True
+
+
+@callback(
+    Output("ob-exec-modal-body", "children", allow_duplicate=True),
+    Output("ob-exec-status", "data", allow_duplicate=True),
+    Output("ob-baseline-poll-interval", "disabled", allow_duplicate=True),
+    Input("ob-retry-baseline-btn", "n_clicks"),
+    State("ob-exec-status", "data"),
+    prevent_initial_call=True,
+)
+def retry_baseline_only(n_clicks, status):
+    if not n_clicks:
+        raise dash.exceptions.PreventUpdate
+
+    st = dict(status or {})
+    params = dict(st.get("baseline_job_parameters") or {})
+    fqn = st.get("fqn", "")
+    if not params or not fqn:
+        st["baseline_error"] = "Missing previous baseline parameters for retry."
+        st["can_retry"] = True
+        return _render_baseline_modal_status(st), st, True
+
+    if not DS_AGENT1_BASELINE_JOB_ID:
+        st["baseline_error"] = "DS_AGENT1_BASELINE_JOB_ID is not configured."
+        st["can_retry"] = True
+        return _render_baseline_modal_status(st), st, True
+
+    try:
+        w = _workspace_client_pat()
+        run_now = w.jobs.run_now(job_id=int(DS_AGENT1_BASELINE_JOB_ID), job_parameters=params)
+        run_id = (
+            getattr(run_now, "run_id", None)
+            or getattr(getattr(run_now, "response", None), "run_id", None)
         )
+        if run_id is None:
+            raise RuntimeError("Agent1 retry run_now did not return a run_id.")
 
-    # Banner
-    if ok:
-        banner = dbc.Alert([
-            html.H5("🎉 Table Successfully Onboarded!",
-                    className="mb-1"),
-            html.P(
-                f"{tname} is now registered and ready for "
-                f"automated data quality monitoring.",
-                className="mb-0",
-                style={"fontSize": "13px"}
-            ),
-        ], color="success", className="mb-3")
-    else:
-        banner = dbc.Alert([
-            html.H5("⚠️ Completed with Errors",
-                    className="mb-1"),
-            html.P(
-                "Some steps failed. Successful steps have been saved.",
-                className="mb-0",
-                style={"fontSize": "13px"}
-            ),
-        ], color="warning", className="mb-3")
-
-    # Stats
-    def stat_box(label, value):
-        return html.Div([
-            html.Div(str(value),
-                     style={"fontSize"  : "28px",
-                             "fontWeight": "800",
-                             "color"     : STEP_COMPLETE,
-                             "fontFamily": "monospace",
-                             "lineHeight": "1"}),
-            html.Small(label, style=MUTED_STYLE),
-        ], style={
-            "textAlign"      : "center",
-            "padding"        : "14px 8px",
-            "backgroundColor": PAGE_BG,
-            "borderRadius"   : "8px",
-            "border"         : f"1px solid {BORDER_COLOR}",
+        _persist_last_baseline_run_id(fqn, str(run_id))
+        st.update({
+            "baseline_run_id": int(run_id),
+            "baseline_run_active": True,
+            "baseline_life_cycle": "PENDING",
+            "baseline_result_state": "",
+            "baseline_error": "",
+            "can_retry": False,
         })
-
-    stats = dbc.Row([
-        dbc.Col(stat_box("Columns",    col_count),  md=3),
-        dbc.Col(stat_box("Col Rules",  val_count),  md=3),
-        dbc.Col(stat_box("Tbl Checks", tval_count), md=3),
-        dbc.Col(stat_box("Baselines",  bl_count),   md=3),
-    ], className="mb-3 g-2")
-
-    # Action buttons
-    action_buttons = dbc.Row([
-        dbc.Col([
-            dbc.Button("🔍 View Validation Results",
-                       href="/validation-results",
-                       color="primary", size="sm",
-                       style={"marginRight": "8px",
-                              "fontWeight" : "600"}),
-            dbc.Button("📋 Table Registry",
-                       href="/table-registry",
-                       color="outline-secondary",
-                       outline=True, size="sm",
-                       style={"marginRight": "8px"}),
-            dbc.Button(
-                "🔗 Baseline Job Run",
-                href=(job_result or {}).get("run_url"),
-                target="_blank",
-                color="outline-info",
-                outline=True,
-                size="sm",
-                style={
-                    "marginRight": "8px",
-                    "display": "inline-block" if (job_result or {}).get("run_url") else "none",
-                },
-            ),
-            dbc.Button("➕ Onboard Another",
-                       id="ob-restart-btn",
-                       color="outline-primary",
-                       outline=True, size="sm"),
-        ], className="d-flex flex-wrap gap-2"),
-    ], className="mt-3")
-
-    # Table info
-    table_info = html.Div([
-        html.Small("Table: ",
-                   style={"color": TEXT_MUTED, "fontSize": "12px"}),
-        html.Small(fqn or tname,
-                   style={"color"     : TEXT_PRIMARY,
-                          "fontWeight": "600",
-                          "fontSize"  : "12px",
-                          "fontFamily": "monospace"}),
-    ], style={"marginBottom": "16px"})
-
-    modal_body = html.Div([
-        table_info,
-        dbc.Progress(
-            value = pct,
-            label = f"{pct}%",
-            color = "success" if ok else "warning",
-            style = {"height": "8px", "marginBottom": "20px"},
-        ),
-        banner,
-        stats,
-        html.Div(step_rows, style={
-            "border"         : f"1px solid {BORDER_COLOR}",
-            "borderRadius"   : "8px",
-            "overflow"       : "hidden",
-            "marginBottom"   : "16px",
-            "backgroundColor": CARD_BG,
-        }),
-        action_buttons,
-    ])
-
-    # Clear pending flag in status
-    results["pending"] = False
-    return modal_body, results
+        return _render_baseline_modal_status(st), st, False
+    except Exception as e:
+        st["baseline_error"] = str(e)
+        st["can_retry"] = True
+        st["baseline_run_active"] = False
+        return _render_baseline_modal_status(st), st, True
 # ── Catalog options on page load ───────────────────────────────────────────
 
 @callback(

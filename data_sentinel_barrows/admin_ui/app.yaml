@@ -25,8 +25,10 @@ env:
 
   # Lakeflow job resource key that resolves to the Agent1 job_id.
   # Configure this resource with CAN_MANAGE_RUN permission in app resources.
-  - name: "DS_AGENT1_JOB_ID"
-    valueFrom: "agent1-job"
+  - name: "DS_AGENT1_BASELINE_JOB_ID"
+    valueFrom: "agent1-baseline-job"
+  - name: "DS_AGENT1_VALIDATION_JOB_ID"
+    valueFrom: "agent1-validation-job"
 
   - name: "DS_DATE_SUGGESTION_ENDPOINT"
     value: "databricks-gpt-oss-20b"

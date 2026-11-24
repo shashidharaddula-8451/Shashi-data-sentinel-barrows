@@ -43,7 +43,32 @@ def get_all_registered_tables():
             is_active,
             registered_timestamp,
             registered_by,
-            change_reason
+                        change_reason,
+                        last_baseline_run_id,
+                        (
+                                SELECT b.baseline_version_id
+                                FROM {BASELINE_METRICS} b
+                                WHERE b.fully_qualified_name = {TABLE_REGISTRY}.fully_qualified_name
+                                    AND b.baseline_version_id IS NOT NULL
+                                ORDER BY b.effective_date DESC, b.computed_timestamp DESC
+                                LIMIT 1
+                        ) AS latest_baseline_version_id,
+                        (
+                                SELECT b.window_start
+                                FROM {BASELINE_METRICS} b
+                                WHERE b.fully_qualified_name = {TABLE_REGISTRY}.fully_qualified_name
+                                    AND b.baseline_version_id IS NOT NULL
+                                ORDER BY b.effective_date DESC, b.computed_timestamp DESC
+                                LIMIT 1
+                        ) AS latest_window_start,
+                        (
+                                SELECT b.window_end
+                                FROM {BASELINE_METRICS} b
+                                WHERE b.fully_qualified_name = {TABLE_REGISTRY}.fully_qualified_name
+                                    AND b.baseline_version_id IS NOT NULL
+                                ORDER BY b.effective_date DESC, b.computed_timestamp DESC
+                                LIMIT 1
+                        ) AS latest_window_end
         FROM {TABLE_REGISTRY}
         ORDER BY registered_timestamp DESC
     """

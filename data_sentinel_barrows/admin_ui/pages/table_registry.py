@@ -7,6 +7,7 @@ import dash_ag_grid as dag
 import uuid
 import logging
 import pandas as pd
+from databricks.sdk import WorkspaceClient
 from db.connection import execute_query, execute_write, validate_identifier
 from db.queries import (
     get_all_registered_tables,
@@ -20,6 +21,8 @@ from config.settings import (
     INGESTION_FREQUENCIES,
     TARGET_CATALOG,
     TARGET_SCHEMA
+    ,DATABRICKS_HOST
+    ,DATABRICKS_TOKEN
 )
 from components.alerts import (
     success_alert, error_alert,
@@ -29,6 +32,34 @@ from components.alerts import (
 logger = logging.getLogger(__name__)
 
 dash.register_page(__name__, path="/table-registry", name="Table Registry")
+
+
+def _workspace_client_pat() -> WorkspaceClient:
+    return WorkspaceClient(
+        host=DATABRICKS_HOST,
+        token=DATABRICKS_TOKEN,
+        auth_type="pat",
+    )
+
+
+def _baseline_run_badge(run_id) -> str:
+    if run_id in (None, "", "nan"):
+        return "—"
+    try:
+        w = _workspace_client_pat()
+        run = w.jobs.get_run(run_id=int(run_id))
+        state = getattr(run, "state", None)
+        life_raw = getattr(state, "life_cycle_state", None) if state is not None else None
+        result_raw = getattr(state, "result_state", None) if state is not None else None
+        life = getattr(life_raw, "value", str(life_raw or ""))
+        result = getattr(result_raw, "value", str(result_raw or ""))
+        if life in {"PENDING", "RUNNING", "QUEUED", "BLOCKED"}:
+            return f"{life}"
+        if result:
+            return f"{life}/{result}"
+        return life or "UNKNOWN"
+    except Exception as e:
+        return f"ERROR: {str(e)[:40]}"
 
 
 # ── Layout ────────────────────────────────────────────────────────────────
@@ -79,6 +110,8 @@ layout = dbc.Container([
                     {"field": "is_active",                       "headerName": "Active",         "width": 85},
                     {"field": "registered_by",                   "headerName": "Registered By",  "width": 120},
                     {"field": "registered_timestamp",            "headerName": "Registered",     "width": 160},
+                    {"field": "baseline_run_status",             "headerName": "Baseline Run",   "width": 180},
+                    {"field": "latest_baseline_window",          "headerName": "Latest Window",  "width": 200},
                 ],
                 rowData=[],
                 defaultColDef=AG_GRID_DEFAULT_COL_DEF,
@@ -319,6 +352,15 @@ layout = dbc.Container([
 def load_registered_tables(n_clicks):
     try:
         df = execute_query(get_all_registered_tables())
+        if not df.empty:
+            df["baseline_run_status"] = df["last_baseline_run_id"].apply(_baseline_run_badge)
+            def _fmt_window(row):
+                ws = row.get("latest_window_start")
+                we = row.get("latest_window_end")
+                if ws and we:
+                    return f"{str(ws)[:10]} to {str(we)[:10]}"
+                return "—"
+            df["latest_baseline_window"] = df.apply(_fmt_window, axis=1)
         return df.to_dict("records")
     except Exception as e:
         logger.error(f"Failed to load registered tables: {str(e)}")
