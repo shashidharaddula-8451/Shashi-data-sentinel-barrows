@@ -6,6 +6,14 @@ import dash_mantine_components as dmc
 import diskcache
 from components.navbar_dbc import create_navbar
 from components.sidebar import create_sidebar
+from components.idle_watchdog import (
+    IDLE_MINUTES,
+    WARN_MINUTES,
+    minutes_until_stop,
+    register_activity_hook,
+    start_watchdog,
+    touch_activity,
+)
 from config.settings import validate_config
 import logging
 from dash import html, dcc, Input, Output, State, DiskcacheManager
@@ -38,6 +46,8 @@ app = dash.Dash(
 )
 
 server = app.server
+register_activity_hook(app.server)
+start_watchdog()
 
 
 def get_config_banner():
@@ -82,6 +92,12 @@ app.layout = dmc.MantineProvider(
     children=[
         dcc.Store(id="nav-mode-store", storage_type="local", data="horizontal"),
         dcc.Location(id="app-location", refresh=False),
+        dcc.Interval(
+            id="idle-banner-interval",
+            interval=15_000,
+            disabled=(IDLE_MINUTES == 0),
+        ),
+        html.Div(id="idle-banner", style={"display": "none"}),
         html.Div(
             id="app-navbar-container",
             children=[create_navbar()],
@@ -138,6 +154,48 @@ def toggle_navbar(pathname, nav_mode):
     sidebar_style = {"display": "block"} if is_vertical else {"display": "none"}
     body_class = "ds-shell-body ds-shell-vertical" if is_vertical else "ds-shell-body"
     return navbar_style, sidebar_style, body_class
+
+
+@app.callback(
+    Output("idle-banner", "children"),
+    Output("idle-banner", "style"),
+    Input("idle-banner-interval", "n_intervals"),
+    prevent_initial_call=False,
+)
+def update_idle_banner(_n):
+    remaining = minutes_until_stop()
+    if remaining is None or remaining > WARN_MINUTES:
+        return html.Div(), {"display": "none"}
+
+    banner = dbc.Alert(
+        [
+            html.Span(f"App will stop in {remaining} min due to inactivity"),
+            dbc.Button(
+                "Keep running",
+                id="idle-keep-btn",
+                size="sm",
+                color="warning",
+                className="ms-2",
+                n_clicks=0,
+            ),
+        ],
+        color="warning",
+        className="mb-2",
+    )
+    return banner, {"display": "block"}
+
+
+@app.callback(
+    Output("idle-banner", "children", allow_duplicate=True),
+    Output("idle-banner", "style", allow_duplicate=True),
+    Input("idle-keep-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def keep_running(n_clicks):
+    if not n_clicks:
+        return dash.no_update, dash.no_update
+    touch_activity()
+    return html.Div(), {"display": "none"}
 
 
 if __name__ == "__main__":
