@@ -460,6 +460,9 @@ def get_validation_run_summary():
             business_date,
             SUBSTRING_INDEX(fully_qualified_name, '.', -1) AS table_name,
             fully_qualified_name,
+            baseline_version_id,
+            triggered_by,
+            pipeline_run_id,
             overall_status,
             total_checks_run,
             total_checks_passed,
@@ -469,9 +472,10 @@ def get_validation_run_summary():
             ai_enrichment_status,
             CASE WHEN alert_sent = true THEN 'YES' ELSE 'NO' END AS alert_fired,
             ROUND(validation_duration_seconds, 2)               AS duration_sec,
+            validation_start_timestamp,
             created_timestamp
         FROM {VALIDATION_RUN}
-        ORDER BY business_date DESC, fully_qualified_name
+        ORDER BY business_date DESC, validation_start_timestamp DESC, fully_qualified_name
     """
 
 
