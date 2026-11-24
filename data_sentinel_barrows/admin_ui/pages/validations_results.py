@@ -2,7 +2,7 @@
 
 import os
 import logging
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 
 import dash
 import dash_ag_grid as dag
@@ -117,6 +117,48 @@ def _run_link(run_id) -> str:
     return f"{host}/jobs/{DS_AGENT1_VALIDATION_JOB_ID}/runs/{run_id}"
 
 
+def _latest_task_status(fqn: str, biz_date: str) -> dict:
+    if not fqn or not biz_date:
+        return {
+            "validation_status": "",
+            "ai_summary_status": "",
+            "alert_status": "",
+        }
+
+    try:
+        df = execute_query(get_validation_run_summary())
+        if df.empty:
+            return {
+                "validation_status": "",
+                "ai_summary_status": "",
+                "alert_status": "",
+            }
+
+        m = (
+            (df["fully_qualified_name"].astype(str) == str(fqn))
+            & (df["business_date"].astype(str).str[:10] == str(biz_date)[:10])
+        )
+        one = df[m]
+        if one.empty:
+            return {
+                "validation_status": "",
+                "ai_summary_status": "",
+                "alert_status": "",
+            }
+        row = one.iloc[0]
+        return {
+            "validation_status": str(row.get("overall_status") or ""),
+            "ai_summary_status": str(row.get("ai_enrichment_status") or ""),
+            "alert_status": str(row.get("alert_fired") or ""),
+        }
+    except Exception:
+        return {
+            "validation_status": "",
+            "ai_summary_status": "",
+            "alert_status": "",
+        }
+
+
 def _select_dates(mode: str, single_date, start_date, end_date):
     if (mode or "single") == "single":
         d = _safe_date(single_date)
@@ -203,6 +245,32 @@ def _baseline_preview_for_dates(fqn: str, selected_dates: list[date]) -> tuple[l
     return preview, missing
 
 
+def _baseline_eligibility(fqn: str) -> tuple[date | None, str]:
+    if not fqn:
+        return None, "Select a table first."
+
+    df = execute_query(
+        f"""
+        SELECT MIN(window_end) AS min_window_end
+        FROM {BASELINE_METRICS}
+        WHERE fully_qualified_name = :fqn
+          AND baseline_version_id IS NOT NULL
+          AND baseline_status IN ('VALID', 'INSUFFICIENT_DATA')
+        """,
+        {"fqn": fqn},
+    )
+
+    if df.empty or df.iloc[0]["min_window_end"] is None:
+        return None, "No baseline window is available for this table yet."
+
+    min_end = pd.to_datetime(df.iloc[0]["min_window_end"], errors="coerce")
+    if pd.isna(min_end):
+        return None, "Baseline exists but has an invalid window_end value."
+
+    earliest = (min_end.date() + timedelta(days=1))
+    return earliest, ""
+
+
 layout = dbc.Container([
 
     html.H2("Validation Agent — Raw Ingestion", className="mt-4 mb-2"),
@@ -258,7 +326,7 @@ layout = dbc.Container([
             ]),
 
             html.Hr(),
-            html.H6("Baseline Preview", className="text-white"),
+            html.H6("Baseline Status", className="text-white"),
             html.Div(id="val-run-baseline-missing", className="mb-2"),
             html.Div(id="val-run-baseline-preview"),
             html.Hr(),
@@ -448,7 +516,6 @@ def load_run_table_options(_n, current_value):
 )
 def update_run_selector_and_preview(fqn, mode, single_date, start_date, end_date, submitted_store):
     mode = mode or "single"
-    run_active = any(not bool(r.get("terminal", False)) for r in (submitted_store or {}).get("runs", []))
 
     if not fqn:
         return (
@@ -478,9 +545,17 @@ def update_run_selector_and_preview(fqn, mode, single_date, start_date, end_date
 
     max_day = _utc_today() - pd.Timedelta(days=lag)
     max_day = max_day.date() if hasattr(max_day, "date") else max_day
+    earliest_day, earliest_reason = _baseline_eligibility(fqn)
+    if earliest_day and earliest_day > max_day:
+        earliest_reason = (
+            f"Baseline earliest valid date is {earliest_day.isoformat()}, "
+            f"but latest complete date is {max_day.isoformat()}."
+        )
     max_day_s = max_day.isoformat()
 
     sd = _safe_date(single_date) or max_day
+    if earliest_day and sd < earliest_day:
+        sd = earliest_day
     if sd > max_day:
         sd = max_day
 
@@ -490,16 +565,34 @@ def update_run_selector_and_preview(fqn, mode, single_date, start_date, end_date
         rs, re = re, rs
     if re > max_day:
         re = max_day
+    if earliest_day and rs < earliest_day:
+        rs = earliest_day
+    if earliest_day and re < earliest_day:
+        re = earliest_day
     if rs > re:
         rs = re
 
     selected_dates = _select_dates(mode, sd.isoformat(), rs.isoformat(), re.isoformat())
 
     warning = ""
-    disabled = run_active
+    disabled = False
+    disabled_reasons = []
     if mode == "range" and len(selected_dates) > 10:
         warning = dbc.Alert(f"Max 10 dates (selected {len(selected_dates)})", color="danger", className="py-1")
         disabled = True
+        disabled_reasons.append("Range mode supports up to 10 dates per submission.")
+
+    if earliest_reason:
+        disabled = True
+        disabled_reasons.append(earliest_reason)
+
+    if earliest_day:
+        too_early = [d.isoformat() for d in selected_dates if d < earliest_day]
+        if too_early:
+            disabled = True
+            disabled_reasons.append(
+                f"Selected date(s) are earlier than earliest valid date {earliest_day.isoformat()}: {', '.join(too_early)}"
+            )
 
     missing_dates = []
     preview_rows = []
@@ -508,9 +601,11 @@ def update_run_selector_and_preview(fqn, mode, single_date, start_date, end_date
 
     if missing_dates:
         disabled = True
+        disabled_reasons.append("Missing baseline for one or more selected dates.")
 
     if not selected_dates:
         disabled = True
+        disabled_reasons.append("Select at least one date.")
 
     summary = ""
     if selected_dates:
@@ -518,30 +613,22 @@ def update_run_selector_and_preview(fqn, mode, single_date, start_date, end_date
 
     preview_table = html.Div()
     if preview_rows:
-        header = html.Thead(html.Tr([
-            html.Th("Date"),
-            html.Th("Baseline"),
-            html.Th("Window"),
-            html.Th("Status"),
-        ]))
-        body = html.Tbody([
-            html.Tr([
-                html.Td(r["date"]),
-                html.Td(r["baseline"]),
-                html.Td(r["window"]),
-                html.Td(r["status"]),
-            ])
-            for r in preview_rows
-        ])
-        preview_table = dbc.Table([header, body], bordered=True, hover=True, size="sm", striped=True)
+        matched = [r for r in preview_rows if r.get("status") and r.get("status") != "MISSING"]
+        compare_text = (
+            f"Baseline coverage: {len(matched)}/{len(preview_rows)} selected dates matched; "
+            f"compare window rule = baseline.window_end < business_date"
+        )
+        preview_table = dbc.Alert(compare_text, color="info", className="py-2 mb-0")
 
     missing_msg = html.Div()
+    status_lines = []
+    status_lines.append(html.Div(f"Latest complete date: {max_day.isoformat()}"))
+    status_lines.append(html.Div(f"Earliest validatable date from baseline: {(earliest_day.isoformat() if earliest_day else 'N/A')}"))
     if missing_dates:
-        missing_msg = dbc.Alert(
-            "Missing baseline for: " + ", ".join(missing_dates),
-            color="warning",
-            className="py-1",
-        )
+        status_lines.append(html.Div("Missing baseline for: " + ", ".join(missing_dates)))
+    if disabled_reasons:
+        status_lines.append(html.Div("Disabled reason: " + " | ".join(dict.fromkeys(disabled_reasons))))
+    missing_msg = dbc.Alert(status_lines, color=("warning" if disabled else "secondary"), className="py-2")
 
     single_style = {"display": "block"} if mode == "single" else {"display": "none"}
     range_style = {"display": "block"} if mode == "range" else {"display": "none"}
@@ -576,6 +663,7 @@ def submit_validation_runs(n_clicks, fqn, selected_dates, submitted_store):
         raise dash.exceptions.PreventUpdate
 
     store = submitted_store or {"runs": [], "polling_active": False}
+    existing_runs = list(store.get("runs", []))
     if not fqn or not selected_dates:
         return store
     if not DS_AGENT1_VALIDATION_JOB_ID:
@@ -597,8 +685,29 @@ def submit_validation_runs(n_clicks, fqn, selected_dates, submitted_store):
     triggered_by = f"UI:{email}" if email else "UI:unknown"
 
     client = _workspace_client_pat()
-    runs = []
+    active_keys = {
+        (str(r.get("fqn") or ""), str(r.get("date") or ""))
+        for r in existing_runs
+        if not bool(r.get("terminal", False))
+    }
+
+    runs = list(existing_runs)
     for d in sorted(selected_dates):
+        key = (fqn, str(d))
+        if key in active_keys:
+            runs.append({
+                "fqn": fqn,
+                "date": str(d),
+                "status": "SKIPPED",
+                "terminal": True,
+                "run_id": None,
+                "run_url": "",
+                "validation_status": "",
+                "ai_summary_status": "",
+                "alert_status": "",
+                "message": "Skipped: this table/date is already queued or running.",
+            })
+            continue
         try:
             run_now = client.jobs.run_now(
                 job_id=int(DS_AGENT1_VALIDATION_JOB_ID),
@@ -612,20 +721,29 @@ def submit_validation_runs(n_clicks, fqn, selected_dates, submitted_store):
             if run_id is None:
                 raise RuntimeError("run_now returned no run_id")
             runs.append({
+                "fqn": fqn,
                 "date": d,
                 "status": "SUBMITTED",
                 "terminal": False,
                 "run_id": int(run_id),
                 "run_url": _run_link(run_id),
+                "validation_status": "RUNNING",
+                "ai_summary_status": "PENDING",
+                "alert_status": "PENDING",
                 "message": "Submitted",
             })
+            active_keys.add(key)
         except Exception as e:
             runs.append({
+                "fqn": fqn,
                 "date": d,
                 "status": "FAILED",
                 "terminal": True,
                 "run_id": None,
                 "run_url": "",
+                "validation_status": "FAILED",
+                "ai_summary_status": "",
+                "alert_status": "",
                 "message": str(e),
             })
 
@@ -653,6 +771,10 @@ def poll_submitted_runs(_n, submitted_store):
 
     for r in runs:
         if r.get("terminal") or not r.get("run_id"):
+            merged = _latest_task_status(r.get("fqn"), r.get("date"))
+            r["validation_status"] = merged.get("validation_status", r.get("validation_status", ""))
+            r["ai_summary_status"] = merged.get("ai_summary_status", r.get("ai_summary_status", ""))
+            r["alert_status"] = merged.get("alert_status", r.get("alert_status", ""))
             continue
         try:
             info = client.jobs.get_run(run_id=int(r["run_id"]))
@@ -672,14 +794,22 @@ def poll_submitted_runs(_n, submitted_store):
                 else:
                     r["status"] = "FAILED"
                     r["message"] = getattr(state, "state_message", "Run failed") or "Run failed"
+                merged = _latest_task_status(r.get("fqn"), r.get("date"))
+                r["validation_status"] = merged.get("validation_status", r.get("validation_status", ""))
+                r["ai_summary_status"] = merged.get("ai_summary_status", r.get("ai_summary_status", ""))
+                r["alert_status"] = merged.get("alert_status", r.get("alert_status", ""))
             elif life in {"RUNNING", "PENDING", "QUEUED", "BLOCKED"}:
                 r["status"] = life
+                r["validation_status"] = "RUNNING"
+                r["ai_summary_status"] = r.get("ai_summary_status", "PENDING") or "PENDING"
+                r["alert_status"] = r.get("alert_status", "PENDING") or "PENDING"
             else:
                 r["status"] = life or r.get("status", "UNKNOWN")
         except Exception as e:
             r["terminal"] = True
             r["status"] = "FAILED"
             r["message"] = str(e)
+            r["validation_status"] = r.get("validation_status", "FAILED") or "FAILED"
             transitioned_terminal = True
 
     store["runs"] = runs
@@ -722,6 +852,9 @@ def render_submitted_runs(submitted_store):
     header = html.Thead(html.Tr([
         html.Th("Date"),
         html.Th("Status"),
+        html.Th("Validation"),
+        html.Th("AI Summary"),
+        html.Th("Alerts"),
         html.Th("Run link"),
         html.Th("Message"),
     ]))
@@ -729,6 +862,9 @@ def render_submitted_runs(submitted_store):
         html.Tr([
             html.Td(r.get("date", "")),
             html.Td(r.get("status", "")),
+            html.Td(r.get("validation_status", "")),
+            html.Td(r.get("ai_summary_status", "")),
+            html.Td(r.get("alert_status", "")),
             html.Td(html.A("Open", href=r.get("run_url"), target="_blank") if r.get("run_url") else ""),
             html.Td(r.get("message", "")),
         ])

@@ -32,6 +32,9 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+# Prevent duplicate onboarding execution from repeated clicks/retries of the same submission.
+_PROCESSED_SUBMISSION_IDS = set()
+
 dash.register_page(
     __name__,
     path  = "/onboarding",
@@ -2455,6 +2458,90 @@ def _active_config_counts(conn, fqn: str) -> dict:
     return counts
 
 
+def _verify_active_config_uniqueness(conn, fqn: str, col_config: dict, table_checks: dict) -> list:
+    errors = []
+
+    expected_cols = {
+        cname for cname, cfg in (col_config or {}).items()
+        if bool(cfg.get("enabled", True))
+    }
+    expected_col_checks = {
+        (cname, chk)
+        for cname, cfg in (col_config or {}).items()
+        if bool(cfg.get("enabled", True))
+        for chk in (cfg.get("checks", []) or [])
+    }
+    expected_table_checks = {
+        chk for chk, cfg in (table_checks or {}).items()
+        if bool(cfg.get("enabled", False))
+    }
+
+    # Active columns: exactly one row per expected enabled column.
+    df_cols = execute_query(
+        f"""
+        SELECT column_name
+        FROM {PREFIX}uc1_column_registry_b
+        WHERE fully_qualified_name = :fqn
+          AND is_active = true
+        """,
+        {"fqn": fqn},
+        conn=conn,
+    )
+    active_cols = [str(r["column_name"]) for _, r in df_cols.iterrows()]
+    dup_cols = {c for c in active_cols if active_cols.count(c) > 1}
+    if dup_cols:
+        errors.append(f"Duplicate active column rows: {sorted(dup_cols)}")
+    if set(active_cols) != expected_cols:
+        errors.append(
+            f"Active columns mismatch. expected={len(expected_cols)} actual={len(set(active_cols))}"
+        )
+
+    # Active column checks: exactly one row per expected (column, validation_name).
+    df_col_checks = execute_query(
+        f"""
+        SELECT column_name, validation_name
+        FROM {PREFIX}uc1_column_validation_registry_b
+        WHERE fully_qualified_name = :fqn
+          AND is_active = true
+        """,
+        {"fqn": fqn},
+        conn=conn,
+    )
+    active_col_checks = [
+        (str(r["column_name"]), str(r["validation_name"]))
+        for _, r in df_col_checks.iterrows()
+    ]
+    dup_col_checks = {k for k in active_col_checks if active_col_checks.count(k) > 1}
+    if dup_col_checks:
+        errors.append(f"Duplicate active column checks: {sorted(dup_col_checks)}")
+    if set(active_col_checks) != expected_col_checks:
+        errors.append(
+            f"Active column checks mismatch. expected={len(expected_col_checks)} actual={len(set(active_col_checks))}"
+        )
+
+    # Active table checks: exactly one row per expected validation_name.
+    df_tbl_checks = execute_query(
+        f"""
+        SELECT validation_name
+        FROM {PREFIX}uc1_table_validation_registry_b
+        WHERE fully_qualified_name = :fqn
+          AND is_active = true
+        """,
+        {"fqn": fqn},
+        conn=conn,
+    )
+    active_tbl_checks = [str(r["validation_name"]) for _, r in df_tbl_checks.iterrows()]
+    dup_tbl_checks = {k for k in active_tbl_checks if active_tbl_checks.count(k) > 1}
+    if dup_tbl_checks:
+        errors.append(f"Duplicate active table checks: {sorted(dup_tbl_checks)}")
+    if set(active_tbl_checks) != expected_table_checks:
+        errors.append(
+            f"Active table checks mismatch. expected={len(expected_table_checks)} actual={len(set(active_tbl_checks))}"
+        )
+
+    return errors
+
+
 def _workspace_client_pat() -> WorkspaceClient:
     return WorkspaceClient(
         host=DATABRICKS_HOST,
@@ -2955,15 +3042,31 @@ def _run_onboarding(
                 )
 
             new_counts = _active_config_counts(conn, fqn)
-            steps.append({
-                "label": "Replaced previous configuration",
-                "state": "done",
-                "detail": (
-                    f"Columns {old_counts['columns']}→{new_counts['columns']} | "
-                    f"Column validations {old_counts['column_validations']}→{new_counts['column_validations']} | "
-                    f"Table validations {old_counts['table_validations']}→{new_counts['table_validations']}"
-                ),
-            })
+            verification_errors = _verify_active_config_uniqueness(
+                conn, fqn, col_config or {}, table_checks or {}
+            )
+            if verification_errors:
+                all_ok = False
+                steps.append({
+                    "label": "Replaced previous configuration",
+                    "state": "error",
+                    "detail": (
+                        f"columns {old_counts['columns']}→{new_counts['columns']}, "
+                        f"column checks {old_counts['column_validations']}→{new_counts['column_validations']}, "
+                        f"table checks {old_counts['table_validations']}→{new_counts['table_validations']} | "
+                        + " ; ".join(verification_errors)
+                    ),
+                })
+            else:
+                steps.append({
+                    "label": "Replaced previous configuration",
+                    "state": "done",
+                    "detail": (
+                        f"columns {old_counts['columns']}→{new_counts['columns']}, "
+                        f"column checks {old_counts['column_validations']}→{new_counts['column_validations']}, "
+                        f"table checks {old_counts['table_validations']}→{new_counts['table_validations']}"
+                    ),
+                })
     else:
         steps.append({
             "label": "Replaced previous configuration",
@@ -3021,6 +3124,7 @@ def _run_onboarding(
     Output("ob-exec-modal",      "is_open",  allow_duplicate=True),
     Output("ob-exec-modal-body", "children", allow_duplicate=True),
     Output("ob-exec-status",     "data",     allow_duplicate=True),
+    Output("ob-execute-btn-visible", "disabled", allow_duplicate=True),
     Input("ob-execute-btn-visible", "n_clicks"),
     State("ob-table-meta",   "data"),
     prevent_initial_call=True,
@@ -3095,12 +3199,14 @@ def open_exec_modal(n_clicks, table_meta):
                   "overflow"    : "hidden"}),
     ])
 
-    return True, pending_body, {"pending": True}
+    submission_id = str(uuid.uuid4())
+    return True, pending_body, {"pending": True, "submission_id": submission_id}, True
 
 @callback(
     Output("ob-exec-modal-body", "children", allow_duplicate=True),
     Output("ob-exec-status",     "data",     allow_duplicate=True),
     Output("ob-baseline-poll-interval", "disabled", allow_duplicate=True),
+    Output("ob-execute-btn-visible", "disabled", allow_duplicate=True),
     Input("ob-exec-status",      "data"),
     State("ob-table-meta",   "data"),
     State("ob-col-config",   "data"),
@@ -3115,6 +3221,13 @@ def run_onboarding(
     # Only run when status is pending
     if not status or not status.get("pending"):
         raise dash.exceptions.PreventUpdate
+
+    submission_id = str(status.get("submission_id") or "").strip()
+    if not submission_id:
+        raise dash.exceptions.PreventUpdate
+    if submission_id in _PROCESSED_SUBMISSION_IDS:
+        raise dash.exceptions.PreventUpdate
+    _PROCESSED_SUBMISSION_IDS.add(submission_id)
 
     if not table_meta or not table_meta.get("table_name"):
         raise dash.exceptions.PreventUpdate
@@ -3131,6 +3244,7 @@ def run_onboarding(
     out_status = {
         "pending": False,
         "fqn": fqn,
+        "submission_id": submission_id,
         "registry_ok": ok,
         "can_retry": False,
         "baseline_run_active": False,
@@ -3163,7 +3277,7 @@ def run_onboarding(
                 "can_retry": True,
             })
     modal_body = _render_baseline_modal_status(out_status)
-    return modal_body, out_status, (not out_status.get("baseline_run_active", False))
+    return modal_body, out_status, (not out_status.get("baseline_run_active", False)), False
 
 
 @callback(
