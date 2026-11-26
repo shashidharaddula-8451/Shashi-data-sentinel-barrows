@@ -34,4 +34,4 @@ env:
     value: "databricks-gpt-oss-20b"
 
   - name: "DS_IDLE_STOP_MINUTES"
-    value: "3"
+    value: "30"
