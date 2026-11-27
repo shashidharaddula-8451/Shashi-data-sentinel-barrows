@@ -156,38 +156,30 @@ TABLE_CHECK_TYPES = [
         "default_on" : True,
         "warn"       : 20,
         "crit"       : 50,
-        "unit"       : "PERCENTAGE",
-        "custom_defaults": {"direction": "both", "baseline_window_days": 30},
     },
     {
-        "id"         : "SCHEMA_CONFORMANCE",
-        "label"      : "Schema Conformance",
+        "id"         : "SCHEMA_DRIFT",
+        "label"      : "Schema Drift",
         "description": "Detects unexpected column additions or removals",
         "default_on" : True,
-        "warn"       : 0,
-        "crit"       : 1,
-        "unit"       : "COUNT",
-        "custom_defaults": {"mode": "strict"},
+        "warn"       : None,
+        "crit"       : None,
     },
     {
-        "id"         : "DUPLICATE_INGESTION",
-        "label"      : "Duplicate Ingestion",
+        "id"         : "DUPLICATE_CHECK",
+        "label"      : "Duplicate Check",
         "description": "Detects duplicate rows above threshold",
         "default_on" : False,
-        "warn"       : 0.1,
-        "crit"       : 1,
-        "unit"       : "PERCENTAGE",
-        "custom_defaults": {"business_key_columns": []},
+        "warn"       : 1,
+        "crit"       : 5,
     },
     {
         "id"         : "PARTITION_FRESHNESS",
         "label"      : "Partition Freshness",
         "description": "Detects stale partitions beyond expected frequency",
         "default_on" : False,
-        "warn"       : 60,
-        "crit"       : 180,
-        "unit"       : "MINUTES",
-        "custom_defaults": {"expected_latency_minutes": 60},
+        "warn"       : 1,
+        "crit"       : 2,
     },
     {
         "id"         : "MALFORMED_RECORDS",
@@ -196,21 +188,15 @@ TABLE_CHECK_TYPES = [
         "default_on" : True,
         "warn"       : 1,
         "crit"       : 5,
-        "unit"       : "PERCENTAGE",
-        "custom_defaults": {"indicator_column": "_rescued_data"},
     },
 ]
-
-TABLE_CHECK_ALIASES = {
-    "SCHEMA_DRIFT": "SCHEMA_CONFORMANCE",
-    "DUPLICATE_CHECK": "DUPLICATE_INGESTION",
-}
 
 COMING_SOON_CHECKS = {
     "FORMAT_PATTERN",
     "DISTRIBUTION_DRIFT",
     "DATE_VALIDITY",
     "REFERENTIAL_INTEGRITY",
+    "DUPLICATE_CHECK",
 }
 
 BASELINE_MODE_LAST30 = "LAST_30_COMPLETE_DAYS"
@@ -2399,10 +2385,7 @@ def _verify_active_config_uniqueness(conn, fqn: str, col_config: dict, table_che
         {"fqn": fqn},
         conn=conn,
     )
-    active_tbl_checks = [
-        TABLE_CHECK_ALIASES.get(str(r["validation_name"]), str(r["validation_name"]))
-        for _, r in df_tbl_checks.iterrows()
-    ]
+    active_tbl_checks = [str(r["validation_name"]) for _, r in df_tbl_checks.iterrows()]
     dup_tbl_checks = {k for k in active_tbl_checks if active_tbl_checks.count(k) > 1}
     if dup_tbl_checks:
         errors.append(f"Duplicate active table checks: {sorted(dup_tbl_checks)}")
@@ -2483,40 +2466,6 @@ def _render_baseline_modal_status(status: dict) -> html.Div:
     return html.Div(rows)
 
 
-def _canonical_table_fqn(table_meta: dict) -> str:
-    meta = table_meta or {}
-    fqn = str(meta.get("fqn") or "").strip()
-    if fqn:
-        return fqn
-
-    catalog = str(meta.get("catalog") or "").strip()
-    schema = str(meta.get("schema") or "").strip()
-    table_name = str(meta.get("table_name") or "").strip()
-    if catalog and schema and table_name:
-        return f"{catalog}.{schema}.{table_name}"
-    return ""
-
-
-def _is_active_registered_fqn(fqn: str) -> bool:
-    if not fqn:
-        return False
-    try:
-        df = execute_query(
-            f"""
-            SELECT 1 AS ok
-            FROM {PREFIX}uc1_table_registry_b
-            WHERE fully_qualified_name = :fqn
-              AND is_active = true
-            LIMIT 1
-            """,
-            {"fqn": fqn},
-        )
-        return not df.empty
-    except Exception as e:
-        logger.warning(f"Active-table validation failed for {fqn}: {e}")
-        return False
-
-
 def _trigger_agent1_baseline_job(table_meta: dict, baseline: dict) -> dict:
     if not DS_AGENT1_BASELINE_JOB_ID:
         return {
@@ -2524,18 +2473,11 @@ def _trigger_agent1_baseline_job(table_meta: dict, baseline: dict) -> dict:
             "message": "DS_AGENT1_BASELINE_JOB_ID is not configured.",
         }
 
-    fqn = _canonical_table_fqn(table_meta)
-    if not fqn:
-        return {
-            "ok": False,
-            "message": "Cannot trigger baseline: table identity is missing.",
-        }
-    if not _is_active_registered_fqn(fqn):
-        return {
-            "ok": False,
-            "message": f"Cannot trigger baseline: active registration not found for {fqn}.",
-        }
-
+    fqn = (
+        f"{table_meta.get('catalog')}."
+        f"{table_meta.get('schema')}."
+        f"{table_meta.get('table_name')}"
+    )
     mode = baseline.get("baseline_mode", BASELINE_MODE_LAST30)
     run_mode = "CUSTOM" if mode == BASELINE_MODE_CUSTOM else "INITIAL"
     baseline_start = str(baseline.get("window_start") or "")
@@ -2876,24 +2818,18 @@ def _run_onboarding(
     for chk_id, cfg in table_checks.items():
         if not cfg.get("enabled", False):
             continue
-        chk_meta = next((c for c in TABLE_CHECK_TYPES if c.get("id") == chk_id), {})
-        threshold_unit = str(chk_meta.get("unit") or "PERCENTAGE")
-        custom_params = dict(chk_meta.get("custom_defaults") or {})
         warn = cfg.get("warn")
         crit = cfg.get("crit")
         tval_rows.append(f"""(
             :table_validation_id_{i}, :fully_qualified_name, :validation_name_{i},
             true, :warning_threshold_{i}, :critical_threshold_{i},
-            :threshold_unit_{i}, :custom_parameters_{i},
-            current_timestamp(), 'onboarding_wizard'
+            'PERCENT', current_timestamp(), 'onboarding_wizard'
         )""")
         tval_params.update({
             f"table_validation_id_{i}" : str(uuid.uuid4()),
             f"validation_name_{i}"     : chk_id,
             f"warning_threshold_{i}"   : None if warn is None else float(warn),
             f"critical_threshold_{i}"  : None if crit is None else float(crit),
-            f"threshold_unit_{i}"      : threshold_unit,
-            f"custom_parameters_{i}"   : json.dumps(custom_params),
         })
         i += 1
 
@@ -2909,7 +2845,6 @@ def _run_onboarding(
                     warning_threshold,
                     critical_threshold,
                     threshold_unit,
-                    custom_parameters,
                     created_timestamp,
                     created_by
                 ) VALUES {", ".join(tval_rows)}
@@ -3289,13 +3224,6 @@ def retry_baseline_only(n_clicks, status):
         return _render_baseline_modal_status(st), st, True
 
     try:
-        params["table_filter"] = fqn
-        if not _is_active_registered_fqn(fqn):
-            st["baseline_error"] = f"Cannot retry baseline: active registration not found for {fqn}."
-            st["can_retry"] = True
-            st["baseline_run_active"] = False
-            return _render_baseline_modal_status(st), st, True
-
         w = _workspace_client_pat()
         run_now = w.jobs.run_now(job_id=int(DS_AGENT1_BASELINE_JOB_ID), job_parameters=params)
         run_id = (
@@ -3973,10 +3901,10 @@ def next_step1(
                    ON tv.fully_qualified_name = t.fully_qualified_name
             LEFT JOIN {PREFIX}uc1_baseline_metrics_b b
                    ON b.fully_qualified_name = t.fully_qualified_name
-            WHERE t.fully_qualified_name = :fqn
+            WHERE t.table_name = :table_name
             GROUP BY 1,2,3,4,5,6,7,8
         """,
-            {"fqn": new_meta["fqn"]},
+            {"table_name": table},
         )
 
         if not df_ex.empty:
@@ -4403,21 +4331,14 @@ def handle_modify(n_clicks, table_meta, existing):
         }
         df_tbl_rules = execute_query(
             f"""
-            SELECT
-                validation_name,
-                warning_threshold,
-                critical_threshold,
-                threshold_unit,
-                custom_parameters,
-                is_active
+            SELECT validation_name, warning_threshold, critical_threshold, is_active
             FROM {PREFIX}uc1_table_validation_registry_b
             WHERE fully_qualified_name = :fqn
             """,
             {"fqn": fqn},
         )
         for _, row in df_tbl_rules.iterrows():
-            raw_chk_id = str(row.get("validation_name") or "").strip()
-            chk_id = TABLE_CHECK_ALIASES.get(raw_chk_id, raw_chk_id)
+            chk_id = str(row.get("validation_name") or "").strip()
             if chk_id not in table_checks or not _is_check_enabled_for_selection(chk_id):
                 continue
             table_checks[chk_id] = {
