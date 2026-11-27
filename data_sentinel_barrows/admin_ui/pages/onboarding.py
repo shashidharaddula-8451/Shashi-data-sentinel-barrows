@@ -156,30 +156,38 @@ TABLE_CHECK_TYPES = [
         "default_on" : True,
         "warn"       : 20,
         "crit"       : 50,
+        "unit"       : "PERCENTAGE",
+        "custom_defaults": {"direction": "both", "baseline_window_days": 30},
     },
     {
-        "id"         : "SCHEMA_DRIFT",
-        "label"      : "Schema Drift",
+        "id"         : "SCHEMA_CONFORMANCE",
+        "label"      : "Schema Conformance",
         "description": "Detects unexpected column additions or removals",
         "default_on" : True,
-        "warn"       : None,
-        "crit"       : None,
+        "warn"       : 0,
+        "crit"       : 1,
+        "unit"       : "COUNT",
+        "custom_defaults": {"mode": "strict"},
     },
     {
-        "id"         : "DUPLICATE_CHECK",
-        "label"      : "Duplicate Check",
+        "id"         : "DUPLICATE_INGESTION",
+        "label"      : "Duplicate Ingestion",
         "description": "Detects duplicate rows above threshold",
         "default_on" : False,
-        "warn"       : 1,
-        "crit"       : 5,
+        "warn"       : 0.1,
+        "crit"       : 1,
+        "unit"       : "PERCENTAGE",
+        "custom_defaults": {"business_key_columns": []},
     },
     {
         "id"         : "PARTITION_FRESHNESS",
         "label"      : "Partition Freshness",
         "description": "Detects stale partitions beyond expected frequency",
         "default_on" : False,
-        "warn"       : 1,
-        "crit"       : 2,
+        "warn"       : 60,
+        "crit"       : 180,
+        "unit"       : "MINUTES",
+        "custom_defaults": {"expected_latency_minutes": 60},
     },
     {
         "id"         : "MALFORMED_RECORDS",
@@ -188,15 +196,49 @@ TABLE_CHECK_TYPES = [
         "default_on" : True,
         "warn"       : 1,
         "crit"       : 5,
+        "unit"       : "PERCENTAGE",
+        "custom_defaults": {"indicator_column": "_rescued_data"},
+    },
+    {
+        "id"         : "JOB_FAILURE",
+        "label"      : "Job Failure",
+        "description": "Detects failed upstream pipeline/job executions",
+        "default_on" : False,
+        "warn"       : 1,
+        "crit"       : 2,
+        "unit"       : "COUNT",
+        "custom_defaults": {
+            "source_table": "",
+            "status_column": "status",
+            "failed_status_values": ["FAILED", "ERROR", "TIMEOUT"],
+            "business_date_column": "business_date"
+        },
+    },
+    {
+        "id"         : "FILE_COMPLETENESS",
+        "label"      : "File Completeness",
+        "description": "Detects missing source files for the business date",
+        "default_on" : False,
+        "warn"       : 1,
+        "crit"       : 2,
+        "unit"       : "COUNT",
+        "custom_defaults": {
+            "file_column": "source_file_name",
+            "expected_file_count": None
+        },
     },
 ]
+
+TABLE_CHECK_ALIASES = {
+    "SCHEMA_DRIFT": "SCHEMA_CONFORMANCE",
+    "DUPLICATE_CHECK": "DUPLICATE_INGESTION",
+}
 
 COMING_SOON_CHECKS = {
     "FORMAT_PATTERN",
     "DISTRIBUTION_DRIFT",
     "DATE_VALIDITY",
     "REFERENTIAL_INTEGRITY",
-    "DUPLICATE_CHECK",
 }
 
 BASELINE_MODE_LAST30 = "LAST_30_COMPLETE_DAYS"
@@ -2385,7 +2427,10 @@ def _verify_active_config_uniqueness(conn, fqn: str, col_config: dict, table_che
         {"fqn": fqn},
         conn=conn,
     )
-    active_tbl_checks = [str(r["validation_name"]) for _, r in df_tbl_checks.iterrows()]
+    active_tbl_checks = [
+        TABLE_CHECK_ALIASES.get(str(r["validation_name"]), str(r["validation_name"]))
+        for _, r in df_tbl_checks.iterrows()
+    ]
     dup_tbl_checks = {k for k in active_tbl_checks if active_tbl_checks.count(k) > 1}
     if dup_tbl_checks:
         errors.append(f"Duplicate active table checks: {sorted(dup_tbl_checks)}")
@@ -2818,18 +2863,24 @@ def _run_onboarding(
     for chk_id, cfg in table_checks.items():
         if not cfg.get("enabled", False):
             continue
+        chk_meta = next((c for c in TABLE_CHECK_TYPES if c.get("id") == chk_id), {})
+        threshold_unit = str(chk_meta.get("unit") or "PERCENTAGE")
+        custom_params = dict(chk_meta.get("custom_defaults") or {})
         warn = cfg.get("warn")
         crit = cfg.get("crit")
         tval_rows.append(f"""(
             :table_validation_id_{i}, :fully_qualified_name, :validation_name_{i},
             true, :warning_threshold_{i}, :critical_threshold_{i},
-            'PERCENT', current_timestamp(), 'onboarding_wizard'
+            :threshold_unit_{i}, :custom_parameters_{i},
+            current_timestamp(), 'onboarding_wizard'
         )""")
         tval_params.update({
             f"table_validation_id_{i}" : str(uuid.uuid4()),
             f"validation_name_{i}"     : chk_id,
             f"warning_threshold_{i}"   : None if warn is None else float(warn),
             f"critical_threshold_{i}"  : None if crit is None else float(crit),
+            f"threshold_unit_{i}"      : threshold_unit,
+            f"custom_parameters_{i}"   : json.dumps(custom_params),
         })
         i += 1
 
@@ -2845,6 +2896,7 @@ def _run_onboarding(
                     warning_threshold,
                     critical_threshold,
                     threshold_unit,
+                    custom_parameters,
                     created_timestamp,
                     created_by
                 ) VALUES {", ".join(tval_rows)}
@@ -4331,14 +4383,21 @@ def handle_modify(n_clicks, table_meta, existing):
         }
         df_tbl_rules = execute_query(
             f"""
-            SELECT validation_name, warning_threshold, critical_threshold, is_active
+            SELECT
+                validation_name,
+                warning_threshold,
+                critical_threshold,
+                threshold_unit,
+                custom_parameters,
+                is_active
             FROM {PREFIX}uc1_table_validation_registry_b
             WHERE fully_qualified_name = :fqn
             """,
             {"fqn": fqn},
         )
         for _, row in df_tbl_rules.iterrows():
-            chk_id = str(row.get("validation_name") or "").strip()
+            raw_chk_id = str(row.get("validation_name") or "").strip()
+            chk_id = TABLE_CHECK_ALIASES.get(raw_chk_id, raw_chk_id)
             if chk_id not in table_checks or not _is_check_enabled_for_selection(chk_id):
                 continue
             table_checks[chk_id] = {
