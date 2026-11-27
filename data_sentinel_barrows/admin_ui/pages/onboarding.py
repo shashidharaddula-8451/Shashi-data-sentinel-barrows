@@ -6,7 +6,6 @@ import dash_bootstrap_components as dbc
 from db.connection import execute_query, execute_write, validate_identifier, get_connection
 import json
 import os
-import requests
 import time
 from databricks.sdk import WorkspaceClient
 from config.settings import (
@@ -19,6 +18,13 @@ from config.settings import (
     ID_NAME_REGEX,
 )
 from components.alerts import error_alert, warning_alert
+from components.date_column_advisor import (
+    analyze_date_columns,
+    profile_date_candidate as advisor_profile_date_candidate,
+    recommend_date_column as advisor_recommend_date_column,
+    llm_date_recommendation as advisor_llm_date_recommendation,
+    dev_helper_barrows as advisor_dev_helper_barrows,
+)
 from components.baseline_window_policy import (
     WINDOW_POLICY_MONTH,
     compute_default_window,
@@ -441,295 +447,70 @@ def _find_col(df, candidates, fallback_idx=0):
     return df.columns[fallback_idx]
 
 
-def _date_name_bonus(column_name: str) -> float:
-    lname = (column_name or "").lower()
-    for i, hint in enumerate(DATE_PRIORITY):
-        if lname == hint:
-            # Earlier in DATE_PRIORITY gets higher bonus.
-            return max(0.0, 8.0 - (i * 0.4))
-    if lname in DATE_NAME_HINTS:
-        return 3.0
-    return 0.0
-
-
-def _date_sample_values(fqn: str, column_name: str, sample_limit: int = DATE_SAMPLE_LIMIT) -> list:
-    try:
-        df = execute_query(
-            f"""
-            SELECT CAST(parsed_dt AS STRING) AS dt
-            FROM (
-                SELECT TRY_CAST(`{column_name}` AS DATE) AS parsed_dt
-                FROM {fqn}
-                WHERE `{column_name}` IS NOT NULL
-            ) s
-            WHERE parsed_dt IS NOT NULL
-            GROUP BY parsed_dt
-            ORDER BY parsed_dt DESC
-            LIMIT :sample_limit
-            """,
-            {"sample_limit": int(max(1, sample_limit))},
-        )
-        if df.empty:
-            return []
-        return [str(v)[:10] for v in df["dt"].dropna().astype(str).tolist()]
-    except Exception as e:
-        logger.warning(f"Date sample extraction failed for {column_name}: {e}")
-        return []
-
-
 def _profile_date_candidate(fqn: str, column_name: str, dtype_norm: str) -> dict:
-    expr = f"TRY_CAST(`{column_name}` AS DATE)"
-    df = execute_query(
-        f"""
-        SELECT
-            COUNT(*) AS total_rows,
-            SUM(CASE WHEN `{column_name}` IS NULL THEN 1 ELSE 0 END) AS null_rows,
-            SUM(CASE WHEN {expr} IS NOT NULL THEN 1 ELSE 0 END) AS parseable_rows,
-            COUNT(DISTINCT {expr}) AS distinct_days,
-            MIN({expr}) AS min_date,
-            MAX({expr}) AS max_date
-        FROM {fqn}
-        """
+    return advisor_profile_date_candidate(
+        fqn=fqn,
+        column_name=column_name,
+        dtype_norm=dtype_norm,
+        sampled=False,
+        arrival_column=None,
+        is_scd2=False,
     )
-
-    if df.empty:
-        return {
-            "column_name": column_name,
-            "dtype": dtype_norm,
-            "total_rows": 0,
-            "null_ratio": 1.0,
-            "parse_ratio": 0.0,
-            "distinct_days": 0,
-            "score": 0.0,
-            "reasons": ["No rows available for profiling."],
-        }
-
-    r = df.iloc[0]
-    total_rows = int(r.get("total_rows") or 0)
-    null_rows = int(r.get("null_rows") or 0)
-    parseable_rows = int(r.get("parseable_rows") or 0)
-    distinct_days = int(r.get("distinct_days") or 0)
-
-    null_ratio = (null_rows / total_rows) if total_rows else 1.0
-    parse_ratio = (parseable_rows / total_rows) if total_rows else 0.0
-
-    score = (
-        parse_ratio * 70.0
-        + (1.0 - min(1.0, null_ratio)) * 20.0
-        + min(1.0, (distinct_days / 365.0)) * 10.0
-        + _date_name_bonus(column_name)
-    )
-
-    reasons = []
-    if parse_ratio < DATE_PARSE_MIN_RATIO:
-        reasons.append(
-            f"Low date parseability ({parse_ratio * 100:.1f}% parse as DATE)."
-        )
-    if null_ratio > DATE_NULL_MAX_RATIO:
-        reasons.append(
-            f"High null ratio ({null_ratio * 100:.1f}% null values)."
-        )
-    if distinct_days < 7:
-        reasons.append(
-            "Low day coverage (< 7 distinct days), weak for baseline windows."
-        )
-    if dtype_norm == "STRING" and parse_ratio < 1.0:
-        reasons.append(
-            "STRING date values may have inconsistent formats."
-        )
-
-    return {
-        "column_name": column_name,
-        "dtype": dtype_norm,
-        "total_rows": total_rows,
-        "null_ratio": null_ratio,
-        "parse_ratio": parse_ratio,
-        "distinct_days": distinct_days,
-        "min_date": str(r.get("min_date") or ""),
-        "max_date": str(r.get("max_date") or ""),
-        "sample_dates": _date_sample_values(fqn, column_name),
-        "score": score,
-        "reasons": reasons,
-    }
 
 
 def _recommend_date_column(fqn: str, date_candidates: list) -> tuple:
-    profiles = []
-    for cand in date_candidates:
-        try:
-            profiles.append(
-                _profile_date_candidate(fqn, cand["name"], cand["dtype"])
-            )
-        except Exception as e:
-            logger.warning(
-                f"Date candidate profiling failed for {cand['name']} in {fqn}: {e}"
-            )
-            profiles.append({
-                "column_name": cand["name"],
-                "dtype": cand["dtype"],
-                "total_rows": 0,
-                "null_ratio": 1.0,
-                "parse_ratio": 0.0,
-                "distinct_days": 0,
-                "score": 0.0,
-                "reasons": ["Profiling failed; unable to verify date quality."],
-            })
-
-    profiles = sorted(profiles, key=lambda x: x.get("score", 0.0), reverse=True)
-    recommended = profiles[0]["column_name"] if profiles else None
+    analysis = analyze_date_columns(fqn=fqn, reanalyse=False)
+    profiles = list(analysis.get("profiles", []))
+    if date_candidates:
+        names = {str(c.get("name") or "") for c in date_candidates}
+        profiles = [p for p in profiles if str(p.get("name") or "") in names]
+    recommended = analysis.get("recommended_column")
     return recommended, profiles
-
-
-def _extract_model_content(response_data: dict) -> str:
-    choices = response_data.get("choices", []) if isinstance(response_data, dict) else []
-    if not choices:
-        return ""
-    message = choices[0].get("message", {})
-    content = message.get("content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        text_parts = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                if text:
-                    text_parts.append(text)
-        if text_parts:
-            return " ".join(text_parts)
-    return choices[0].get("text", "")
-
-
-def _parse_json_from_text(content: str) -> dict:
-    txt = (content or "").strip()
-    if not txt:
-        return {}
-    if "```json" in txt:
-        txt = txt.split("```json", 1)[1]
-        if "```" in txt:
-            txt = txt.split("```", 1)[0]
-    elif "```" in txt:
-        parts = txt.split("```")
-        if len(parts) >= 2:
-            txt = parts[1]
-    txt = txt.strip()
-    s = txt.find("{")
-    e = txt.rfind("}") + 1
-    if s == -1 or e <= s:
-        return {}
-    try:
-        return json.loads(txt[s:e])
-    except Exception:
-        return {}
 
 
 def _llm_date_recommendation(fqn: str, profiles: list) -> dict:
     if not profiles:
-        return {
-            "used": False,
-            "reason": "no_profiles",
-        }
-
-    workspace_host = (os.environ.get("DATABRICKS_HOST", "") or "").replace("https://", "")
-    workspace_token = os.environ.get("DATABRICKS_TOKEN", "") or ""
-    if not workspace_host or not workspace_token or not DATE_LLM_ENDPOINT:
-        return {
-            "used": False,
-            "reason": "missing_llm_env",
-        }
-
-    profile_payload = []
-    for p in profiles[:12]:
-        profile_payload.append({
-            "column_name": p.get("column_name"),
-            "dtype": p.get("dtype"),
-            "score": round(float(p.get("score", 0.0)), 3),
-            "parse_ratio": round(float(p.get("parse_ratio", 0.0)), 4),
-            "null_ratio": round(float(p.get("null_ratio", 1.0)), 4),
-            "distinct_days": int(p.get("distinct_days", 0) or 0),
-            "min_date": str(p.get("min_date") or ""),
-            "max_date": str(p.get("max_date") or ""),
-            "sample_dates": p.get("sample_dates", [])[:DATE_SAMPLE_LIMIT],
-            "quality_notes": p.get("reasons", []),
-        })
-
-    prompt = (
-        "Select the single best business date column for data-quality baselining and validation windows. "
-        "Use evidence from full-table aggregates and sample parsed dates. "
-        "Respond with strict JSON only: "
-        "{\"recommended_column\":\"...\",\"confidence\":\"high|medium|low\","
-        "\"explanation\":\"...\",\"warnings\":\"...\"}.\n"
-        f"Table: {fqn}\n"
-        f"Candidate profiles: {json.dumps(profile_payload, ensure_ascii=True)}"
-    )
-
-    try:
-        model_url = f"https://{workspace_host}/serving-endpoints/{DATE_LLM_ENDPOINT}/invocations"
-        headers = {
-            "Authorization": f"Bearer {workspace_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a data engineering assistant. Recommend the best business date column. "
-                        "Do not include markdown. Return JSON object only."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-            "max_tokens": 400,
-            "temperature": 0.0,
-        }
-
-        response = requests.post(
-            model_url,
-            headers=headers,
-            json=payload,
-            timeout=DATE_LLM_TIMEOUT_SECONDS,
-        )
-        if response.status_code != 200:
-            return {
-                "used": False,
-                "reason": f"http_{response.status_code}",
+        return {"used": False, "reason": "no_profiles"}
+    payload = {
+        "table_name": fqn.split(".")[-1],
+        "table_type": "UNKNOWN",
+        "is_scd2": False,
+        "scd2_stats": {},
+        "arrival_column": None,
+        "commit_pattern": {},
+        "candidates": [
+            {
+                "name": p.get("name"),
+                "dtype": p.get("dtype"),
+                "role": p.get("role"),
+                "parse_ratio": p.get("parse_ratio"),
+                "null_ratio": p.get("null_ratio"),
+                "future_ratio": p.get("future_ratio"),
+                "distinct_days": p.get("distinct_days"),
+                "min_date": p.get("min_date"),
+                "max_date": p.get("max_date"),
+                "rows_per_day_median": p.get("rows_per_day_median"),
+                "rows_per_day_cv": p.get("rows_per_day_cv"),
+                "recent_completeness": p.get("recent_completeness"),
+                "lag_p50": p.get("lag_p50"),
+                "lag_p90": p.get("lag_p90"),
+                "lag_p95": p.get("lag_p95"),
+                "lag_max": p.get("lag_max"),
+                "share_negative_lag": p.get("share_negative_lag"),
+                "sample_dates": p.get("sample_dates", []),
             }
-
-        raw_content = _extract_model_content(response.json())
-        parsed = _parse_json_from_text(raw_content)
-        rec = str(parsed.get("recommended_column") or "").strip()
-        valid_columns = {p.get("column_name") for p in profiles}
-        if rec not in valid_columns:
-            return {
-                "used": False,
-                "reason": "invalid_recommendation",
-                "raw_recommendation": rec,
-            }
-
-        return {
-            "used": True,
-            "recommended_column": rec,
-            "confidence": str(parsed.get("confidence") or "").strip() or "medium",
-            "explanation": str(parsed.get("explanation") or "").strip(),
-            "warnings": str(parsed.get("warnings") or "").strip(),
-        }
-    except Exception as e:
-        logger.warning(f"LLM date recommendation failed for {fqn}: {e}")
-        return {
-            "used": False,
-            "reason": "exception",
-        }
+            for p in profiles
+        ],
+    }
+    valid = {str(p.get("name") or "") for p in profiles}
+    return advisor_llm_date_recommendation(fqn, payload, valid)
 
 
-def _date_disclaimer_block(selected_col: str, analysis):
+def _date_disclaimer_block(selected_col: str, analysis, chosen_validation_lag_days: int = None):
     if isinstance(analysis, list):
         analysis = {
             "profiles": analysis,
-            "recommended_column": analysis[0].get("column_name") if analysis else None,
+            "recommended_column": analysis[0].get("name") if analysis else None,
             "recommended_source": "rule",
             "llm": {"used": False},
         }
@@ -742,22 +523,37 @@ def _date_disclaimer_block(selected_col: str, analysis):
     if not profiles:
         return html.Div()
 
-    profile_map = {p["column_name"]: p for p in profiles}
+    profile_map = {str(p.get("name") or ""): p for p in profiles}
     selected = profile_map.get(selected_col) if selected_col else None
+
+    suggested_lag = int((analysis or {}).get("suggested_validation_lag_days") or 1)
+    is_scd2 = bool((analysis or {}).get("is_scd2"))
+    confidence = str((analysis or {}).get("confidence") or "medium")
+    explanation = str((analysis or {}).get("explanation") or "")
+    alternatives = list((analysis or {}).get("alternatives") or [])
+    use_current_versions_only = bool((analysis or {}).get("use_current_versions_only"))
+    source = str((analysis or {}).get("recommended_source") or "rule").upper()
+
+    if chosen_validation_lag_days is None:
+        chosen_validation_lag_days = suggested_lag
+    try:
+        chosen_validation_lag_days = max(1, int(chosen_validation_lag_days))
+    except Exception:
+        chosen_validation_lag_days = suggested_lag
+
     if selected_col == _NO_DATE_COL_VALUE:
-        top = profiles[0]
+        top = profiles[0] if profiles else {}
         return dbc.Alert(
             [
                 html.Strong("Selection warning: "),
                 (
-                    f"A likely business date column exists ({top['column_name']}) "
+                    f"A likely business date column exists ({top.get('name', 'N/A')}) "
                     "but 'No date column' is selected. This may degrade baseline quality."
                 ),
                 html.Br(),
                 html.Small(
-                    "Privacy note: recommendation uses full-table aggregate metrics "
-                    "plus controlled date-value samples for the internal LLM. "
-                    "No raw non-date values or PII are stored by this UI.",
+                    "Analysed column names, aggregate statistics and common dates only. "
+                    "Columns that may contain personal data were skipped.",
                     style=MUTED_STYLE,
                 ),
             ],
@@ -765,66 +561,110 @@ def _date_disclaimer_block(selected_col: str, analysis):
             className="mt-2",
         )
 
-    issues = []
-    if selected:
-        issues.extend(selected.get("reasons", []))
+    role_badge = dbc.Badge(f"Role: {str((selected or {}).get('role') or 'N/A')}", color="secondary", className="me-2")
+    parse_badge = dbc.Badge(f"parse {(selected or {}).get('parse_ratio', 0.0) * 100:.1f}%", color="info", className="me-2") if selected else html.Span()
+    null_badge = dbc.Badge(f"null {(selected or {}).get('null_ratio', 1.0) * 100:.1f}%", color="dark", className="me-2") if selected else html.Span()
+    lag_badge = dbc.Badge(
+        f"lag p50/p90 {((selected or {}).get('lag_p50') if (selected or {}).get('lag_p50') is not None else 'n/a')}/"
+        f"{((selected or {}).get('lag_p90') if (selected or {}).get('lag_p90') is not None else 'n/a')}",
+        color="warning",
+        className="me-2",
+    ) if selected else html.Span()
+    scd2_badge = dbc.Badge(f"SCD2 {'yes' if is_scd2 else 'no'}", color="secondary", className="me-2")
+    src_badge = dbc.Badge(f"source {source}", color="secondary", className="me-2")
+    conf_badge = dbc.Badge(f"confidence {confidence}", color="secondary", className="me-2")
 
-    info_bits = []
-    if recommended_source == "llm" and llm.get("used"):
-        conf = llm.get("confidence", "medium")
-        expl = llm.get("explanation", "")
-        warn = llm.get("warnings", "")
-        info_bits.append(f"Internal LLM confidence: {conf}.")
-        if expl:
-            info_bits.append(f"LLM rationale: {expl}")
-        if warn:
-            issues.append(f"LLM caution: {warn}")
-
+    warning_items = []
     if selected_col and recommended_column and selected_col != recommended_column and selected_col != _NO_DATE_COL_VALUE:
-        issues.insert(
-            0,
-            f"Selected column differs from recommended column '{recommended_column}'.",
-        )
+        warning_items.append(f"Selected column differs from suggested column '{recommended_column}'.")
+    if selected and str(selected.get("role") or "") == "LIFECYCLE":
+        warning_items.append("This looks like a lifecycle date; daily validation slices may be incomplete.")
+    if selected and (selected.get("lag_p90") is not None) and float(selected.get("lag_p90") or 0) > chosen_validation_lag_days:
+        warning_items.append("Recent days will look incomplete with the current validation lag.")
 
-    if issues:
-        return dbc.Alert(
-            [
-                html.Strong(f"Date column caution for '{selected_col}': "),
-                html.Ul([html.Li(i) for i in issues]),
-                html.Div([html.Small(x, style=MUTED_STYLE) for x in info_bits]),
-                html.Small(
-                    "Suggestion quality is computed from full-table aggregate metrics. "
-                    "The internal LLM sees only controlled date-context payloads; "
-                    "no row-level non-date values are persisted.",
-                    style=MUTED_STYLE,
-                ),
-            ],
-            color="warning",
-            className="mt-2",
+    alt_block = html.Details([
+        html.Summary("Alternatives"),
+        html.Ul([
+            html.Li(f"{a.get('column')}: {a.get('why_not')}")
+            for a in alternatives
+            if a.get("column")
+        ]) if alternatives else html.Div("No alternatives available."),
+    ], className="mt-2")
+
+    excluded = (analysis or {}).get("excluded_columns", [])
+    excluded_block = html.Div([
+        html.Small(
+            "Not analysed (possible PII): " + ", ".join(
+                f"{e.get('name')} ({e.get('reason')})" for e in excluded[:8]
+            ),
+            style=MUTED_STYLE,
         )
+    ]) if excluded else html.Div()
 
     return dbc.Alert(
         [
-            html.Strong(f"'{selected_col}' looks suitable as business date column."),
-            html.Br(),
-            html.Small(
-                (
-                    "Recommendation source: internal LLM. "
-                    if recommended_source == "llm" and llm.get("used")
-                    else "Recommendation source: deterministic profiling fallback. "
+            dbc.Row([
+                dbc.Col(
+                    html.Div([
+                        html.Strong(f"Suggested: {recommended_column} - {explanation}"),
+                        html.Div([
+                            role_badge, parse_badge, null_badge, lag_badge,
+                            scd2_badge, src_badge, conf_badge,
+                        ], className="mt-2 mb-2"),
+                        html.Div([
+                            html.Span(f"Suggested validation lag: {suggested_lag} days "),
+                            html.Button(
+                                "Apply",
+                                id="ob-date-apply-lag-btn",
+                                n_clicks=0,
+                                style={
+                                    "background": "none",
+                                    "border": "none",
+                                    "padding": "0",
+                                    "margin": "0",
+                                    "color": "#4a9edd",
+                                    "textDecoration": "underline",
+                                    "cursor": "pointer",
+                                    "fontWeight": "600",
+                                },
+                            ),
+                        ]),
+                        html.Div(
+                            "Validate current versions only (__END_AT IS NULL)",
+                            className="mt-1",
+                            style={"display": "block" if use_current_versions_only else "none", "fontWeight": "600"},
+                        ),
+                        alt_block,
+                        excluded_block,
+                        html.Small(
+                            "Analysed column names, aggregate statistics and common dates only. "
+                            "Columns that may contain personal data were skipped.",
+                            style=MUTED_STYLE,
+                        ),
+                    ])
                 ),
-                style=MUTED_STYLE,
-            ),
-            html.Br(),
-            html.Small(
-                "Validated using full-table aggregate metrics with controlled date-context only; "
-                "raw non-date values are not stored.",
-                style=MUTED_STYLE,
-            ),
+                dbc.Col(
+                    dbc.Button(
+                        "Re-analyse",
+                        id="ob-date-reanalyse-btn",
+                        color="secondary",
+                        outline=True,
+                        size="sm",
+                        n_clicks=0,
+                    ),
+                    width="auto",
+                    className="ms-auto",
+                ),
+            ], className="g-2"),
+            html.Ul([html.Li(w) for w in warning_items], className="mt-2 mb-0") if warning_items else html.Div(),
         ],
-        color="success",
+        color="warning" if warning_items else "success",
         className="mt-2",
     )
+
+
+def _run_date_advisor_dev_helper(catalog: str = "comms_media_prd", schema: str = "exposure_data_asset"):
+    return advisor_dev_helper_barrows(catalog=catalog, schema=schema)
 
 
 # ── Progress bar ───────────────────────────────────────────────────────────
@@ -1286,7 +1126,15 @@ def build_step1(prefill: dict = None) -> html.Div:
                         "over the full table.",
                         style=MUTED_STYLE
                     ),
-                    html.Div(id="ob-date-col-disclaimer"),
+                    dcc.Loading(
+                        id="ob-date-analysis-loading",
+                        type="circle",
+                        custom_spinner=html.Div([
+                            dbc.Spinner(size="sm", color="primary", spinner_style={"marginRight": "8px"}),
+                            html.Span("Analysing date columns...", style={"color": TEXT_PRIMARY, "fontWeight": "600"}),
+                        ], style={"display": "flex", "alignItems": "center", "gap": "6px", "padding": "8px 0"}),
+                        children=html.Div(id="ob-date-col-disclaimer"),
+                    ),
                 ], md=6),
                 dbc.Col([
                     html.Label("Owner Email", style=LABEL_STYLE),
@@ -2092,10 +1940,18 @@ def build_step5(
             srow("Ingestion Pattern",   table_meta.get("layer",               "—")),
             srow("Source Type",         table_meta.get("ingestion_type",      "—")),
             srow("Frequency",           table_meta.get("ingestion_frequency",  "—")),
-            srow("Date Column",
+              srow("Chosen Date Column",
                  table_meta.get("date_column", "—")
                  if table_meta.get("date_column") != _NO_DATE_COL_VALUE
                  else "None (full table)"),
+              srow("Suggested Date Column",
+                  table_meta.get("suggested_date_column", "—")
+                  if table_meta.get("suggested_date_column")
+                  else "—"),
+              srow(
+                 "Date Column Overridden",
+                 "Yes" if bool(table_meta.get("date_column_overridden")) else "No",
+              ),
             srow("Owner",               table_meta.get("owner_email",          "—")),
         ], style={**CARD_STYLE, "marginBottom": "16px"}),
 
@@ -3490,61 +3346,58 @@ def load_tables(schema, catalog):
     Output("ob-date-col-disclaimer", "children"),
     Output("ob-date-col-analysis", "data"),
     Input("ob-table",     "value"),
+    Input("ob-date-reanalyse-btn", "n_clicks"),
     State("ob-catalog",   "value"),
     State("ob-schema",    "value"),
+    State("ob-date-col-analysis", "data"),
 )
-def load_date_columns(table, catalog, schema):
+def load_date_columns(table, _reanalyse_clicks, catalog, schema, existing_analysis):
     if not table or not catalog or not schema:
         return [], None, html.Div(), {}
     try:
         fqn = f"{catalog}.{schema}.{table}"
         validate_identifier(fqn)
-        df = execute_query(f"DESCRIBE TABLE {fqn}")
-        if df.empty:
-            return [_NO_DATE_COL_OPTION], _NO_DATE_COL_VALUE, html.Div(), {}
 
-        date_cols = []
-        string_candidates = []
+        analysis_fqn = str((existing_analysis or {}).get("fqn") or "")
+        triggered = str(ctx.triggered_id or "")
+        force_reanalyse = bool(triggered == "ob-date-reanalyse-btn")
 
-        for _, row in df.iterrows():
-            cname      = str(row.iloc[0]).strip()
-            dtype      = str(row.iloc[1]).strip() \
-                         if len(df.columns) > 1 else ""
-            dtype_norm = dtype.upper().split("(")[0].split("<")[0].strip()
-            if not cname or cname.startswith("#"):
+        if analysis_fqn == fqn and not force_reanalyse:
+            analysis = existing_analysis or {}
+        else:
+            analysis = analyze_date_columns(fqn=fqn, reanalyse=force_reanalyse)
+
+        candidates = list(analysis.get("candidates", []))
+        profiles = {str(p.get("name") or ""): p for p in (analysis.get("profiles") or [])}
+        recommended_column = str(analysis.get("recommended_column") or "")
+
+        options = []
+        has_non_excluded = False
+        for c in candidates:
+            cname = str(c.get("name") or "")
+            if not cname:
                 continue
-            if dtype_norm in DATE_TYPES:
-                date_cols.append({
-                    "name" : cname,
-                    "dtype": dtype_norm,
-                    "tag"  : dtype_norm,
-                })
-            elif dtype_norm == "STRING" and \
-                    cname.lower() in DATE_NAME_HINTS:
-                string_candidates.append({
-                    "name": cname,
-                    "dtype": "STRING",
-                    "tag": "STRING → DATE",
-                })
 
-        # Limit string candidates to keep profiling predictable on very wide tables.
-        if string_candidates:
-            pr = {k: i for i, k in enumerate(DATE_PRIORITY)}
-            string_candidates = sorted(
-                string_candidates,
-                key=lambda x: pr.get(x["name"].lower(), 999),
-            )[:8]
-            date_cols.extend(string_candidates)
+            if bool(c.get("excluded")):
+                options.append({
+                    "label": f"{cname} (Not analysed (possible PII) - {c.get('exclude_reason')})",
+                    "value": cname,
+                    "disabled": True,
+                })
+                continue
 
-        # Build options — always include "no date column"
-        options = [
-            {"label": f"{c['name']}  ({c['tag']})",
-             "value": c["name"]}
-            for c in date_cols
-        ]
+            has_non_excluded = True
+            role = str((profiles.get(cname) or {}).get("role") or c.get("role") or "AUDIT")
+            is_rec = cname == recommended_column
+            rec_suffix = " (Recommended)" if is_rec else ""
+            options.append({
+                "label": f"{cname}{rec_suffix} [{role}]",
+                "value": cname,
+            })
+
         options.append(_NO_DATE_COL_OPTION)
 
-        if not date_cols:
+        if not has_non_excluded:
             no_date_msg = dbc.Alert(
                 [
                     html.Strong("No reliable business date column detected."),
@@ -3557,36 +3410,14 @@ def load_date_columns(table, catalog, schema):
                 color="warning",
                 className="mt-2",
             )
-            return options, _NO_DATE_COL_VALUE, no_date_msg, {
-                "fqn": fqn,
-                "profiles": [],
-                "recommended_column": _NO_DATE_COL_VALUE,
-                "recommended_source": "rule",
-                "llm": {"used": False, "reason": "no_candidates"},
-            }
+            fallback_analysis = dict(analysis or {})
+            fallback_analysis["recommended_column"] = _NO_DATE_COL_VALUE
+            return options, _NO_DATE_COL_VALUE, no_date_msg, fallback_analysis
 
-        rule_recommended, profiles = _recommend_date_column(fqn, date_cols)
-        if not rule_recommended:
-            rule_recommended = date_cols[0]["name"]
+        selected = recommended_column if recommended_column else options[0]["value"]
+        disclaimer = _date_disclaimer_block(selected, analysis)
 
-        llm = _llm_date_recommendation(fqn, profiles)
-        final_recommended = rule_recommended
-        source = "rule"
-        if llm.get("used") and llm.get("recommended_column"):
-            final_recommended = llm["recommended_column"]
-            source = "llm"
-
-        analysis = {
-            "fqn": fqn,
-            "profiles": profiles,
-            "rule_recommended": rule_recommended,
-            "recommended_column": final_recommended,
-            "recommended_source": source,
-            "llm": llm,
-        }
-        disclaimer = _date_disclaimer_block(final_recommended, analysis)
-
-        return options, final_recommended, disclaimer, analysis
+        return options, selected, disclaimer, analysis
 
     except Exception as e:
         logger.error(f"load_date_columns failed: {e}")
@@ -3688,16 +3519,42 @@ def disable_review_for_invalid_baseline(mode, lag_days, start, end):
     Output("ob-date-col-disclaimer", "children", allow_duplicate=True),
     Input("ob-date-col", "value"),
     State("ob-date-col-analysis", "data"),
+    State("ob-validation-lag-days", "data"),
     prevent_initial_call=True,
 )
-def update_date_col_disclaimer(selected_col, analysis):
+def update_date_col_disclaimer(selected_col, analysis, validation_lag_days):
     if not analysis:
         return html.Div()
     try:
-        return _date_disclaimer_block(selected_col, analysis)
+        return _date_disclaimer_block(selected_col, analysis, validation_lag_days)
     except Exception as e:
         logger.warning(f"update_date_col_disclaimer failed: {e}")
         return html.Div()
+
+
+@callback(
+    Output("ob-validation-lag-days", "data", allow_duplicate=True),
+    Output("ob-baseline", "data", allow_duplicate=True),
+    Output("ob-date-col-disclaimer", "children", allow_duplicate=True),
+    Input("ob-date-apply-lag-btn", "n_clicks"),
+    State("ob-date-col-analysis", "data"),
+    State("ob-baseline", "data"),
+    State("ob-date-col", "value"),
+    prevent_initial_call=True,
+)
+def apply_suggested_validation_lag(n_clicks, analysis, baseline, selected_col):
+    if not n_clicks or not analysis:
+        raise dash.exceptions.PreventUpdate
+
+    try:
+        suggested = max(1, int((analysis or {}).get("suggested_validation_lag_days") or 1))
+    except Exception:
+        suggested = 1
+
+    new_baseline = dict(baseline or {})
+    new_baseline["validation_lag_days"] = suggested
+    new_disclaimer = _date_disclaimer_block(selected_col, analysis, suggested)
+    return suggested, new_baseline, new_disclaimer
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -3897,6 +3754,7 @@ def _build_col_config_from_describe_df(df_desc):
     State("ob-frequency",       "value"),
     State("ob-date-col",        "value"),
     State("ob-owner",           "value"),
+    State("ob-date-col-analysis", "data"),
     State("ob-col-config",      "data"),
     State("ob-table-checks",    "data"),
     State("ob-baseline",        "data"),
@@ -3905,7 +3763,7 @@ def _build_col_config_from_describe_df(df_desc):
 def next_step1(
     n_clicks,
     catalog, schema, table, layer, ing_type, freq, date_col, owner,
-    col_config, table_checks, baseline,
+    date_col_analysis, col_config, table_checks, baseline,
 ):
     if not n_clicks:
         raise dash.exceptions.PreventUpdate
@@ -3921,6 +3779,13 @@ def next_step1(
     if not date_col or date_col == _NO_DATE_COL_VALUE:
         date_col = _NO_DATE_COL_VALUE
 
+    suggested_col = str((date_col_analysis or {}).get("recommended_column") or "")
+    date_override = bool(
+        suggested_col
+        and date_col != _NO_DATE_COL_VALUE
+        and date_col != suggested_col
+    )
+
     new_meta = {
         "catalog"            : catalog,
         "schema"             : schema,
@@ -3929,6 +3794,8 @@ def next_step1(
         "ingestion_type"     : ing_type,
         "ingestion_frequency": freq,
         "date_column"        : date_col,
+        "suggested_date_column": suggested_col,
+        "date_column_overridden": date_override,
         "owner_email"        : owner or "",
         "fqn"                : f"{catalog}.{schema}.{table}",
     }
