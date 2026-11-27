@@ -2483,6 +2483,40 @@ def _render_baseline_modal_status(status: dict) -> html.Div:
     return html.Div(rows)
 
 
+def _canonical_table_fqn(table_meta: dict) -> str:
+    meta = table_meta or {}
+    fqn = str(meta.get("fqn") or "").strip()
+    if fqn:
+        return fqn
+
+    catalog = str(meta.get("catalog") or "").strip()
+    schema = str(meta.get("schema") or "").strip()
+    table_name = str(meta.get("table_name") or "").strip()
+    if catalog and schema and table_name:
+        return f"{catalog}.{schema}.{table_name}"
+    return ""
+
+
+def _is_active_registered_fqn(fqn: str) -> bool:
+    if not fqn:
+        return False
+    try:
+        df = execute_query(
+            f"""
+            SELECT 1 AS ok
+            FROM {PREFIX}uc1_table_registry_b
+            WHERE fully_qualified_name = :fqn
+              AND is_active = true
+            LIMIT 1
+            """,
+            {"fqn": fqn},
+        )
+        return not df.empty
+    except Exception as e:
+        logger.warning(f"Active-table validation failed for {fqn}: {e}")
+        return False
+
+
 def _trigger_agent1_baseline_job(table_meta: dict, baseline: dict) -> dict:
     if not DS_AGENT1_BASELINE_JOB_ID:
         return {
@@ -2490,11 +2524,18 @@ def _trigger_agent1_baseline_job(table_meta: dict, baseline: dict) -> dict:
             "message": "DS_AGENT1_BASELINE_JOB_ID is not configured.",
         }
 
-    fqn = (
-        f"{table_meta.get('catalog')}."
-        f"{table_meta.get('schema')}."
-        f"{table_meta.get('table_name')}"
-    )
+    fqn = _canonical_table_fqn(table_meta)
+    if not fqn:
+        return {
+            "ok": False,
+            "message": "Cannot trigger baseline: table identity is missing.",
+        }
+    if not _is_active_registered_fqn(fqn):
+        return {
+            "ok": False,
+            "message": f"Cannot trigger baseline: active registration not found for {fqn}.",
+        }
+
     mode = baseline.get("baseline_mode", BASELINE_MODE_LAST30)
     run_mode = "CUSTOM" if mode == BASELINE_MODE_CUSTOM else "INITIAL"
     baseline_start = str(baseline.get("window_start") or "")
@@ -3248,6 +3289,13 @@ def retry_baseline_only(n_clicks, status):
         return _render_baseline_modal_status(st), st, True
 
     try:
+        params["table_filter"] = fqn
+        if not _is_active_registered_fqn(fqn):
+            st["baseline_error"] = f"Cannot retry baseline: active registration not found for {fqn}."
+            st["can_retry"] = True
+            st["baseline_run_active"] = False
+            return _render_baseline_modal_status(st), st, True
+
         w = _workspace_client_pat()
         run_now = w.jobs.run_now(job_id=int(DS_AGENT1_BASELINE_JOB_ID), job_parameters=params)
         run_id = (
@@ -3925,10 +3973,10 @@ def next_step1(
                    ON tv.fully_qualified_name = t.fully_qualified_name
             LEFT JOIN {PREFIX}uc1_baseline_metrics_b b
                    ON b.fully_qualified_name = t.fully_qualified_name
-            WHERE t.table_name = :table_name
+            WHERE t.fully_qualified_name = :fqn
             GROUP BY 1,2,3,4,5,6,7,8
         """,
-            {"table_name": table},
+            {"fqn": new_meta["fqn"]},
         )
 
         if not df_ex.empty:
