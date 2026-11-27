@@ -199,34 +199,6 @@ TABLE_CHECK_TYPES = [
         "unit"       : "PERCENTAGE",
         "custom_defaults": {"indicator_column": "_rescued_data"},
     },
-    {
-        "id"         : "JOB_FAILURE",
-        "label"      : "Job Failure",
-        "description": "Detects failed upstream pipeline/job executions",
-        "default_on" : False,
-        "warn"       : 1,
-        "crit"       : 2,
-        "unit"       : "COUNT",
-        "custom_defaults": {
-            "source_table": "",
-            "status_column": "status",
-            "failed_status_values": ["FAILED", "ERROR", "TIMEOUT"],
-            "business_date_column": "business_date"
-        },
-    },
-    {
-        "id"         : "FILE_COMPLETENESS",
-        "label"      : "File Completeness",
-        "description": "Detects missing source files for the business date",
-        "default_on" : False,
-        "warn"       : 1,
-        "crit"       : 2,
-        "unit"       : "COUNT",
-        "custom_defaults": {
-            "file_column": "source_file_name",
-            "expected_file_count": None
-        },
-    },
 ]
 
 TABLE_CHECK_ALIASES = {
