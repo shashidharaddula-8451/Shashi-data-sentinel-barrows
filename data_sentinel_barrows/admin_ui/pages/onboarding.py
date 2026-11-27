@@ -21,7 +21,6 @@ from components.alerts import error_alert, warning_alert
 from components.date_column_advisor import (
     analyze_date_columns,
     profile_date_candidate as advisor_profile_date_candidate,
-    recommend_date_column as advisor_recommend_date_column,
     llm_date_recommendation as advisor_llm_date_recommendation,
     dev_helper_barrows as advisor_dev_helper_barrows,
 )
@@ -603,59 +602,28 @@ def _date_disclaimer_block(selected_col: str, analysis, chosen_validation_lag_da
 
     return dbc.Alert(
         [
-            dbc.Row([
-                dbc.Col(
-                    html.Div([
-                        html.Strong(f"Suggested: {recommended_column} - {explanation}"),
-                        html.Div([
-                            role_badge, parse_badge, null_badge, lag_badge,
-                            scd2_badge, src_badge, conf_badge,
-                        ], className="mt-2 mb-2"),
-                        html.Div([
-                            html.Span(f"Suggested validation lag: {suggested_lag} days "),
-                            html.Button(
-                                "Apply",
-                                id="ob-date-apply-lag-btn",
-                                n_clicks=0,
-                                style={
-                                    "background": "none",
-                                    "border": "none",
-                                    "padding": "0",
-                                    "margin": "0",
-                                    "color": "#4a9edd",
-                                    "textDecoration": "underline",
-                                    "cursor": "pointer",
-                                    "fontWeight": "600",
-                                },
-                            ),
-                        ]),
-                        html.Div(
-                            "Validate current versions only (__END_AT IS NULL)",
-                            className="mt-1",
-                            style={"display": "block" if use_current_versions_only else "none", "fontWeight": "600"},
-                        ),
-                        alt_block,
-                        excluded_block,
-                        html.Small(
-                            "Analysed column names, aggregate statistics and common dates only. "
-                            "Columns that may contain personal data were skipped.",
-                            style=MUTED_STYLE,
-                        ),
-                    ])
+            html.Div([
+                html.Strong(f"Suggested: {recommended_column} - {explanation}"),
+                html.Div([
+                    role_badge, parse_badge, null_badge, lag_badge,
+                    scd2_badge, src_badge, conf_badge,
+                ], className="mt-2 mb-2"),
+                html.Div([
+                    html.Span(f"Suggested validation lag: {suggested_lag} days"),
+                ]),
+                html.Div(
+                    "Validate current versions only (__END_AT IS NULL)",
+                    className="mt-1",
+                    style={"display": "block" if use_current_versions_only else "none", "fontWeight": "600"},
                 ),
-                dbc.Col(
-                    dbc.Button(
-                        "Re-analyse",
-                        id="ob-date-reanalyse-btn",
-                        color="secondary",
-                        outline=True,
-                        size="sm",
-                        n_clicks=0,
-                    ),
-                    width="auto",
-                    className="ms-auto",
+                alt_block,
+                excluded_block,
+                html.Small(
+                    "Analysed column names, aggregate statistics and common dates only. "
+                    "Columns that may contain personal data were skipped.",
+                    style=MUTED_STYLE,
                 ),
-            ], className="g-2"),
+            ]),
             html.Ul([html.Li(w) for w in warning_items], className="mt-2 mb-0") if warning_items else html.Div(),
         ],
         color="warning" if warning_items else "success",
@@ -1110,7 +1078,37 @@ def build_step1(prefill: dict = None) -> html.Div:
 
             dbc.Row([
                 dbc.Col([
-                    html.Label("Date Column", style=LABEL_STYLE),
+                    html.Div([
+                        html.Label("Date Column", style={**LABEL_STYLE, "marginBottom": "0"}),
+                        html.Div([
+                            dbc.Button(
+                                "Re-analyse",
+                                id="ob-date-reanalyse-btn",
+                                color="secondary",
+                                outline=True,
+                                size="sm",
+                                n_clicks=0,
+                                style={"display": "none"},
+                            ),
+                            html.Button(
+                                "Apply",
+                                id="ob-date-apply-lag-btn",
+                                n_clicks=0,
+                                style={
+                                    "display": "none",
+                                    "background": "none",
+                                    "border": "none",
+                                    "padding": "0",
+                                    "margin": "0",
+                                    "color": "#4a9edd",
+                                    "textDecoration": "underline",
+                                    "cursor": "pointer",
+                                    "fontWeight": "600",
+                                },
+                            ),
+                            html.Span(id="ob-date-apply-lag-label", style={**MUTED_STYLE, "marginLeft": "4px"}),
+                        ], style={"display": "flex", "gap": "10px", "alignItems": "center"}),
+                    ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "6px"}),
                     dcc.Dropdown(
                         id          = "ob-date-col",
                         options     = [],
@@ -1126,6 +1124,7 @@ def build_step1(prefill: dict = None) -> html.Div:
                         "over the full table.",
                         style=MUTED_STYLE
                     ),
+                    html.Div(id="ob-date-analysis-status", style={**MUTED_STYLE, "marginTop": "4px"}),
                     dcc.Loading(
                         id="ob-date-analysis-loading",
                         type="circle",
@@ -3340,32 +3339,73 @@ def load_tables(schema, catalog):
 
 # ── Date column options ────────────────────────────────────────────────────
 
+def _fallback_date_options_from_describe(fqn: str):
+    options = []
+    try:
+        df = execute_query(f"DESCRIBE TABLE {fqn}")
+        if df.empty:
+            return options
+        for _, row in df.iterrows():
+            cname = str(row.iloc[0]).strip()
+            dtype = str(row.iloc[1]).strip() if len(df.columns) > 1 else ""
+            dtype_norm = dtype.upper().split("(")[0].split("<")[0].strip()
+            if not cname or cname.startswith("#"):
+                continue
+            if dtype_norm in DATE_TYPES:
+                options.append({"label": f"{cname}  ({dtype_norm})", "value": cname})
+            elif dtype_norm == "STRING" and cname.lower() in DATE_NAME_HINTS:
+                options.append({"label": f"{cname}  (STRING -> DATE)", "value": cname})
+    except Exception:
+        return []
+    return options
+
 @callback(
     Output("ob-date-col", "options"),
     Output("ob-date-col", "value"),
     Output("ob-date-col-disclaimer", "children"),
     Output("ob-date-col-analysis", "data"),
+    Output("ob-date-reanalyse-btn", "style"),
+    Output("ob-date-apply-lag-btn", "style"),
+    Output("ob-date-apply-lag-label", "children"),
     Input("ob-table",     "value"),
     Input("ob-date-reanalyse-btn", "n_clicks"),
     State("ob-catalog",   "value"),
     State("ob-schema",    "value"),
     State("ob-date-col-analysis", "data"),
+    running=[
+        (Output("ob-date-col", "disabled"), True, False),
+        (Output("ob-date-analysis-status", "children"), "Analysing date columns...", ""),
+    ],
+    background=True,
 )
 def load_date_columns(table, _reanalyse_clicks, catalog, schema, existing_analysis):
     if not table or not catalog or not schema:
-        return [], None, html.Div(), {}
+        return [], None, html.Div(), {}, {"display": "none"}, {"display": "none"}, ""
     try:
         fqn = f"{catalog}.{schema}.{table}"
         validate_identifier(fqn)
 
         analysis_fqn = str((existing_analysis or {}).get("fqn") or "")
         triggered = str(ctx.triggered_id or "")
-        force_reanalyse = bool(triggered == "ob-date-reanalyse-btn")
+        try:
+            curr_reanalyse_clicks = int(_reanalyse_clicks or 0)
+        except Exception:
+            curr_reanalyse_clicks = 0
+        try:
+            prev_reanalyse_clicks = int((existing_analysis or {}).get("_reanalyse_clicks") or 0)
+        except Exception:
+            prev_reanalyse_clicks = 0
+        force_reanalyse = bool(
+            triggered == "ob-date-reanalyse-btn"
+            or curr_reanalyse_clicks > prev_reanalyse_clicks
+        )
 
         if analysis_fqn == fqn and not force_reanalyse:
             analysis = existing_analysis or {}
         else:
             analysis = analyze_date_columns(fqn=fqn, reanalyse=force_reanalyse)
+        analysis = dict(analysis or {})
+        analysis["_reanalyse_clicks"] = curr_reanalyse_clicks
 
         candidates = list(analysis.get("candidates", []))
         profiles = {str(p.get("name") or ""): p for p in (analysis.get("profiles") or [])}
@@ -3397,6 +3437,11 @@ def load_date_columns(table, _reanalyse_clicks, catalog, schema, existing_analys
 
         options.append(_NO_DATE_COL_OPTION)
 
+        reanalyse_style = {"display": "inline-block"}
+        suggested_lag = int((analysis or {}).get("suggested_validation_lag_days") or 1)
+        apply_style = {"display": "inline-block"} if has_non_excluded else {"display": "none"}
+        apply_label = f"Suggested validation lag: {suggested_lag} days"
+
         if not has_non_excluded:
             no_date_msg = dbc.Alert(
                 [
@@ -3412,16 +3457,46 @@ def load_date_columns(table, _reanalyse_clicks, catalog, schema, existing_analys
             )
             fallback_analysis = dict(analysis or {})
             fallback_analysis["recommended_column"] = _NO_DATE_COL_VALUE
-            return options, _NO_DATE_COL_VALUE, no_date_msg, fallback_analysis
+            return (
+                options,
+                _NO_DATE_COL_VALUE,
+                no_date_msg,
+                fallback_analysis,
+                reanalyse_style,
+                {"display": "none"},
+                "",
+            )
 
         selected = recommended_column if recommended_column else options[0]["value"]
         disclaimer = _date_disclaimer_block(selected, analysis)
 
-        return options, selected, disclaimer, analysis
+        return (
+            options,
+            selected,
+            disclaimer,
+            analysis,
+            reanalyse_style,
+            apply_style,
+            apply_label,
+        )
 
     except Exception as e:
         logger.error(f"load_date_columns failed: {e}")
-        return [_NO_DATE_COL_OPTION], _NO_DATE_COL_VALUE, html.Div(), {}
+        try:
+            fqn = f"{catalog}.{schema}.{table}"
+            fallback_opts = _fallback_date_options_from_describe(fqn)
+        except Exception:
+            fallback_opts = []
+        fallback_opts.append(_NO_DATE_COL_OPTION)
+        return (
+            fallback_opts,
+            (fallback_opts[0]["value"] if fallback_opts and fallback_opts[0].get("value") != _NO_DATE_COL_VALUE else _NO_DATE_COL_VALUE),
+            warning_alert("Date analysis failed; showing describe-based date options."),
+            {},
+            {"display": "inline-block" if table else "none"},
+            {"display": "none"},
+            "",
+        )
 
 
 # ── Baseline warning (reads from visible pickers) ─────────────────────────

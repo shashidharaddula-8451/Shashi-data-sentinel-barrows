@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 
 import requests
 
-from db.connection import execute_query
 from config.settings import DATABRICKS_HOST, DATABRICKS_TOKEN
+from db.connection import execute_query
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ DATE_NAME_HINTS = {
     "created_at", "updated_at", "event_time", "event_date",
     "load_date", "inserted_dt", "business_date", "run_date",
     "partition_date", "record_date", "file_date", "transaction_date",
-    "start", "end", "__start_at", "__end_at", "_commit_timestamp",
+    "start", "end", "__start_at", "_commit_timestamp",
 }
 
 DATE_PRIORITY = [
@@ -79,8 +79,7 @@ def verify_parse_expression_unit_test() -> dict:
             return {"ok": False, "reason": "empty_result"}
         d1 = str(df.iloc[0].get("d1") or "")[:10]
         d2 = str(df.iloc[0].get("d2") or "")[:10]
-        ok = (d1 == "2026-09-22" and d2 == "2026-09-24")
-        return {"ok": ok, "d1": d1, "d2": d2}
+        return {"ok": (d1 == "2026-09-22" and d2 == "2026-09-24"), "d1": d1, "d2": d2}
     except Exception as e:
         logger.warning("date parse expression unit test failed: %s", e)
         return {"ok": False, "reason": "exception"}
@@ -93,6 +92,24 @@ def _split_fqn(fqn: str):
     return parts[0], parts[1], parts[2]
 
 
+def _safe_float(v, d=0.0):
+    try:
+        if v is None:
+            return d
+        return float(v)
+    except Exception:
+        return d
+
+
+def _safe_int(v, d=0):
+    try:
+        if v is None:
+            return d
+        return int(v)
+    except Exception:
+        return d
+
+
 def _name_tokens(name: str) -> str:
     x = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(name or ""))
     x = re.sub(r"[^a-zA-Z0-9]+", "_", x).strip("_").lower()
@@ -103,10 +120,15 @@ def _looks_like_pii_name(name: str) -> bool:
     t = _name_tokens(name)
     if not t:
         return False
-    for token in PII_DENYLIST:
-        if token in t:
-            return True
-    return False
+    return any(token in t for token in PII_DENYLIST)
+
+
+def _priority_index(name: str) -> int:
+    lname = str(name or "").lower()
+    try:
+        return DATE_PRIORITY.index(lname)
+    except ValueError:
+        return 999
 
 
 def _load_tagged_pii_columns(catalog: str, schema: str, table: str):
@@ -181,17 +203,33 @@ def _load_column_masks(catalog: str, schema: str, table: str):
     return masked_cols
 
 
-def _table_has_row_filter(fqn: str) -> bool:
+def _describe_extended_text(fqn: str) -> str:
     try:
         df = execute_query(f"DESCRIBE TABLE EXTENDED {fqn}")
         if df.empty:
-            return False
-        text_blob = " ".join(str(v).lower() for v in df.fillna("").values.flatten().tolist())
-        if "row filter" in text_blob and "none" not in text_blob:
-            return True
+            return ""
+        return " ".join(str(v).lower() for v in df.fillna("").values.flatten().tolist())
+    except Exception:
+        return ""
+
+
+def _table_has_row_filter(fqn: str) -> bool:
+    txt = _describe_extended_text(fqn)
+    return ("row filter" in txt and "none" not in txt)
+
+
+def _describe_table_type(fqn: str) -> str:
+    try:
+        df = execute_query(f"DESCRIBE TABLE EXTENDED {fqn}")
+        if df.empty:
+            return "UNKNOWN"
+        for _, row in df.iterrows():
+            k = str(row.iloc[0]).strip().lower()
+            if k == "type":
+                return str(row.iloc[1]).strip().upper()
     except Exception as e:
-        logger.info("row filter discovery failed for %s: %s", fqn, e)
-    return False
+        logger.info("table type detection failed for %s: %s", fqn, e)
+    return "UNKNOWN"
 
 
 def _describe_columns(fqn: str):
@@ -213,34 +251,44 @@ def _describe_columns(fqn: str):
     return out
 
 
-def _string_parse_ratio_sample_200(fqn: str, column_name: str) -> float:
-    qcol = _quote_ident(column_name)
-    pexpr = parse_date_expr(qcol)
-    df = execute_query(
-        f"""
-        SELECT AVG(CASE WHEN {pexpr} IS NOT NULL THEN 1.0 ELSE 0.0 END) AS parse_ratio
-        FROM (
-            SELECT {qcol}
-            FROM {fqn}
-            WHERE {qcol} IS NOT NULL
-            LIMIT 200
-        ) s
-        """
+def _string_parse_ratios_sample_200(fqn: str, string_cols: list):
+    if not string_cols:
+        return {}
+
+    select_cols = ", ".join(_quote_ident(c) for c in string_cols)
+    where_any = " OR ".join(f"{_quote_ident(c)} IS NOT NULL" for c in string_cols)
+
+    ratio_exprs = []
+    for c in string_cols:
+        qc = _quote_ident(c)
+        p = parse_date_expr(qc)
+        alias = f"pr__{re.sub(r'[^a-zA-Z0-9_]', '_', c.lower())}"
+        ratio_exprs.append(f"AVG(CASE WHEN {p} IS NOT NULL THEN 1.0 ELSE 0.0 END) AS {alias}")
+
+    q = f"""
+    WITH s AS (
+        SELECT {select_cols}
+        FROM {fqn}
+        WHERE {where_any}
+        LIMIT 200
     )
-    if df.empty:
-        return 0.0
-    try:
-        return float(df.iloc[0].get("parse_ratio") or 0.0)
-    except Exception:
-        return 0.0
+    SELECT {", ".join(ratio_exprs)}
+    FROM s
+    """
 
-
-def _priority_index(name: str) -> int:
-    lname = str(name or "").lower()
+    out = {}
     try:
-        return DATE_PRIORITY.index(lname)
-    except ValueError:
-        return 999
+        df = execute_query(q)
+        if df.empty:
+            return out
+        row = df.iloc[0]
+        for c in string_cols:
+            alias = f"pr__{re.sub(r'[^a-zA-Z0-9_]', '_', c.lower())}"
+            out[c] = _safe_float(row.get(alias), 0.0)
+        return out
+    except Exception as e:
+        logger.info("string parse ratio query failed for %s: %s", fqn, e)
+        return out
 
 
 def _discover_candidates(fqn: str, catalog: str, schema: str, table: str):
@@ -249,6 +297,7 @@ def _discover_candidates(fqn: str, catalog: str, schema: str, table: str):
     masked_cols = _load_column_masks(catalog, schema, table)
     has_row_filter = _table_has_row_filter(fqn)
 
+    string_cols_for_parse = []
     candidates = []
     excluded = []
 
@@ -257,24 +306,26 @@ def _discover_candidates(fqn: str, catalog: str, schema: str, table: str):
         lname = name.lower()
         dtype_norm = c["dtype_norm"]
 
-        exclude_reason = None
-        if c.get("is_nested"):
-            exclude_reason = "nested"
+        reason = None
+        if lname == "__end_at":
+            reason = "scd2_end_column"
+        elif c.get("is_nested"):
+            reason = "nested"
         elif dtype_norm in COMPLEX_TYPES:
-            exclude_reason = "nested_or_complex"
+            reason = "nested_or_complex"
         elif has_row_filter:
-            exclude_reason = "table_row_filter"
+            reason = "table_row_filter"
         elif lname in tagged_cols:
-            exclude_reason = "tagged_pii_column"
+            reason = "tagged_pii_column"
         elif table_tagged:
-            exclude_reason = "tagged_pii_table"
+            reason = "tagged_pii_table"
         elif lname in masked_cols:
-            exclude_reason = "column_mask"
+            reason = "column_mask"
         elif _looks_like_pii_name(name):
-            exclude_reason = "pii_name_denylist"
+            reason = "pii_name_denylist"
 
-        if exclude_reason:
-            excluded.append({"name": name, "dtype": c["dtype"], "reason": exclude_reason})
+        if reason:
+            excluded.append({"name": name, "dtype": c["dtype"], "reason": reason})
             continue
 
         if dtype_norm in DATE_TYPES:
@@ -284,23 +335,21 @@ def _discover_candidates(fqn: str, catalog: str, schema: str, table: str):
                 "candidate_source": "native_date_type",
                 "parse_ratio_seed": 1.0,
             })
-            continue
+        elif dtype_norm == "STRING":
+            string_cols_for_parse.append(name)
 
-        if dtype_norm == "STRING":
-            ratio = _string_parse_ratio_sample_200(fqn, name)
-            if ratio >= DATE_PARSE_MIN_RATIO:
-                candidates.append({
-                    "name": name,
-                    "dtype": "STRING",
-                    "candidate_source": "string_parseable",
-                    "parse_ratio_seed": ratio,
-                })
-            else:
-                excluded.append({
-                    "name": name,
-                    "dtype": c["dtype"],
-                    "reason": f"string_parse_ratio_lt_{DATE_PARSE_MIN_RATIO:.2f}",
-                })
+    parse_ratios = _string_parse_ratios_sample_200(fqn, string_cols_for_parse)
+    for c in string_cols_for_parse:
+        ratio = _safe_float(parse_ratios.get(c), 0.0)
+        if ratio >= DATE_PARSE_MIN_RATIO:
+            candidates.append({
+                "name": c,
+                "dtype": "STRING",
+                "candidate_source": "string_parseable",
+                "parse_ratio_seed": ratio,
+            })
+        else:
+            excluded.append({"name": c, "dtype": "STRING", "reason": f"string_parse_ratio_lt_{DATE_PARSE_MIN_RATIO:.2f}"})
 
     def _sort_key(x):
         lname = str(x["name"]).lower()
@@ -311,27 +360,12 @@ def _discover_candidates(fqn: str, catalog: str, schema: str, table: str):
     return columns, candidates, excluded
 
 
-def _describe_table_type(fqn: str) -> str:
-    try:
-        df = execute_query(f"DESCRIBE TABLE EXTENDED {fqn}")
-        if df.empty:
-            return "UNKNOWN"
-        for _, row in df.iterrows():
-            k = str(row.iloc[0]).strip().lower()
-            if k == "type":
-                return str(row.iloc[1]).strip().upper()
-    except Exception as e:
-        logger.info("table type detection failed for %s: %s", fqn, e)
-    return "UNKNOWN"
-
-
 def _describe_size_bytes(fqn: str) -> int:
     try:
         df = execute_query(f"DESCRIBE DETAIL {fqn}")
         if df.empty:
             return 0
-        val = df.iloc[0].get("sizeInBytes")
-        return int(val or 0)
+        return _safe_int(df.iloc[0].get("sizeInBytes"), 0)
     except Exception:
         return 0
 
@@ -360,40 +394,45 @@ def _history_commit_pattern(fqn: str):
                 ~keep[op_col].str.startswith("VACUUM")
                 & ~keep[op_col].str.startswith("OPTIMIZE")
                 & ~keep[op_col].str.contains("SET TBLPROPERTIES", regex=False)
-                & ~keep[op_col].str.contains("SET", regex=False)
             ]
 
         if keep.empty:
             return out
 
         keep[ts_col] = keep[ts_col].astype(str)
-        dt = keep[ts_col].str[:19]
-        parsed = [datetime.fromisoformat(x.replace("Z", "+00:00")) for x in dt.tolist()]
+        parsed = []
+        for x in keep[ts_col].str[:19].tolist():
+            try:
+                parsed.append(datetime.fromisoformat(x.replace("Z", "+00:00")))
+            except Exception:
+                pass
+        if not parsed:
+            return out
+
         parsed_utc = [p.astimezone(timezone.utc) if p.tzinfo else p.replace(tzinfo=timezone.utc) for p in parsed]
         dates = [p.date() for p in parsed_utc]
         hours = [p.hour for p in parsed_utc]
 
-        day_counts = {}
+        per_day = {}
         for d in dates:
-            day_counts[d] = day_counts.get(d, 0) + 1
+            per_day[d] = per_day.get(d, 0) + 1
 
         out["latest_commit_date"] = str(max(dates)) if dates else None
         out["typical_commit_hour_utc"] = max(set(hours), key=hours.count) if hours else None
-        out["commits_per_day"] = (sum(day_counts.values()) / max(1, len(day_counts))) if day_counts else None
-        out["commit_count"] = int(len(parsed_utc))
-        return out
+        out["commits_per_day"] = (sum(per_day.values()) / max(1, len(per_day))) if per_day else None
+        out["commit_count"] = len(parsed_utc)
     except Exception as e:
         logger.info("commit history read failed for %s: %s", fqn, e)
-        return out
+    return out
 
 
-def _scd2_stats(fqn: str, columns: list):
+def _scd2_stats_one_query(fqn: str, columns: list):
     names = {c["name"].lower() for c in columns}
     has_start = "__start_at" in names
     has_end = "__end_at" in names
     is_scd2 = has_start and has_end
 
-    stats = {
+    out = {
         "is_scd2": is_scd2,
         "current_rows": None,
         "total_rows": None,
@@ -401,76 +440,49 @@ def _scd2_stats(fqn: str, columns: list):
         "start_eq_updated_ratio": None,
     }
     if not is_scd2:
-        return stats
+        return out
+
+    has_id = "id" in names
+    has_updated = "updated" in names
+
+    id_expr = (
+        f"(SELECT AVG(cnt) FROM (SELECT COUNT(*) AS cnt FROM {fqn} WHERE id IS NOT NULL GROUP BY id) k)"
+        if has_id else "CAST(NULL AS DOUBLE)"
+    )
+    upd_expr = (
+        f"AVG(CASE WHEN __START_AT IS NOT NULL AND {parse_date_expr('updated')} IS NOT NULL AND TO_DATE(__START_AT) = {parse_date_expr('updated')} THEN 1.0 ELSE 0.0 END)"
+        if has_updated else "CAST(NULL AS DOUBLE)"
+    )
 
     try:
         df = execute_query(
             f"""
             SELECT
                 COUNT(*) AS total_rows,
-                SUM(CASE WHEN __END_AT IS NULL THEN 1 ELSE 0 END) AS current_rows
+                SUM(CASE WHEN __END_AT IS NULL THEN 1 ELSE 0 END) AS current_rows,
+                {id_expr} AS versions_per_key_avg,
+                {upd_expr} AS start_eq_updated_ratio
             FROM {fqn}
             """
         )
         if not df.empty:
-            stats["total_rows"] = int(df.iloc[0].get("total_rows") or 0)
-            stats["current_rows"] = int(df.iloc[0].get("current_rows") or 0)
+            r = df.iloc[0]
+            out["total_rows"] = _safe_int(r.get("total_rows"), 0)
+            out["current_rows"] = _safe_int(r.get("current_rows"), 0)
+            out["versions_per_key_avg"] = _safe_float(r.get("versions_per_key_avg"), None)
+            out["start_eq_updated_ratio"] = _safe_float(r.get("start_eq_updated_ratio"), None)
     except Exception as e:
-        logger.info("scd2 row stats failed for %s: %s", fqn, e)
+        logger.info("scd2 stats query failed for %s: %s", fqn, e)
 
-    if "id" in names:
-        try:
-            df = execute_query(
-                f"""
-                SELECT AVG(cnt) AS versions_per_key_avg
-                FROM (
-                    SELECT COUNT(*) AS cnt
-                    FROM {fqn}
-                    WHERE id IS NOT NULL
-                    GROUP BY id
-                ) k
-                """
-            )
-            if not df.empty:
-                stats["versions_per_key_avg"] = float(df.iloc[0].get("versions_per_key_avg") or 0.0)
-        except Exception as e:
-            logger.info("scd2 versions_per_key failed for %s: %s", fqn, e)
-
-    if "updated" in names:
-        try:
-            updated_expr = parse_date_expr("updated")
-            df = execute_query(
-                f"""
-                SELECT
-                    AVG(
-                        CASE
-                            WHEN {updated_expr} IS NOT NULL AND TO_DATE(__START_AT) = {updated_expr}
-                                THEN 1.0
-                            ELSE 0.0
-                        END
-                    ) AS start_eq_updated_ratio
-                FROM {fqn}
-                WHERE __START_AT IS NOT NULL
-                """
-            )
-            if not df.empty:
-                stats["start_eq_updated_ratio"] = float(df.iloc[0].get("start_eq_updated_ratio") or 0.0)
-        except Exception as e:
-            logger.info("scd2 start_eq_updated failed for %s: %s", fqn, e)
-
-    return stats
+    return out
 
 
 def _arrival_column(candidates: list, scd2_info: dict, commit_pattern: dict):
     if scd2_info.get("is_scd2"):
         return "__START_AT"
 
-    latest_commit = commit_pattern.get("latest_commit_date")
-    if not latest_commit:
-        return None
-
-    arrival_name_re = re.compile(r"(__start_at|_commit_timestamp|updated|ingest|load)", re.IGNORECASE)
-    ranked = [c["name"] for c in candidates if arrival_name_re.search(c["name"])]
+    arrival_re = re.compile(r"(__start_at|_commit_timestamp|updated|ingest|load)", re.IGNORECASE)
+    ranked = [c["name"] for c in candidates if arrival_re.search(c["name"])]
     return ranked[0] if ranked else None
 
 
@@ -478,171 +490,192 @@ def _source_clause(fqn: str, sampled: bool) -> str:
     return f"{fqn} TABLESAMPLE (2 PERCENT)" if sampled else fqn
 
 
-def _safe_float(v, d=0.0):
-    try:
-        if v is None:
-            return d
-        return float(v)
-    except Exception:
-        return d
-
-
-def _safe_int(v, d=0):
-    try:
-        if v is None:
-            return d
-        return int(v)
-    except Exception:
-        return d
-
-
-def _sample_dates_for_candidate(fqn: str, col: str, sampled: bool, limit_n: int):
-    expr = parse_date_expr(_quote_ident(col))
-    src = _source_clause(fqn, sampled)
-    try:
-        df = execute_query(
-            f"""
-            SELECT CAST(d AS STRING) AS d
-            FROM (
-                SELECT {expr} AS d, COUNT(*) AS cnt
-                FROM {src}
-                WHERE {expr} IS NOT NULL
-                GROUP BY {expr}
-                HAVING COUNT(*) >= 10
-                ORDER BY d DESC
-                LIMIT :limit_n
-            ) z
-            """,
-            {"limit_n": int(max(1, limit_n))},
-        )
-        if df.empty:
-            return []
-        return [str(v)[:10] for v in df["d"].dropna().astype(str).tolist()]
-    except Exception as e:
-        logger.info("sample_dates failed for %s.%s: %s", fqn, col, e)
+def _profile_candidates_one_query(fqn: str, candidates: list, arrival_column: str, is_scd2: bool, sampled: bool):
+    if not candidates:
         return []
+
+    src = _source_clause(fqn, sampled)
+    pieces = []
+
+    for cand in candidates:
+        name = cand["name"]
+        dtype = cand["dtype"]
+        qcol = _quote_ident(name)
+        d_expr = parse_date_expr(qcol)
+        d_valid = f"CASE WHEN {d_expr} BETWEEN DATE '1900-01-01' AND DATE '2100-12-31' THEN {d_expr} END"
+
+        arr_expr = "CAST(NULL AS DATE)"
+        if arrival_column:
+            arr_expr = parse_date_expr(_quote_ident(arrival_column))
+
+        lag_select = "CAST(NULL AS DOUBLE)"
+        lag_select_90 = "CAST(NULL AS DOUBLE)"
+        lag_select_95 = "CAST(NULL AS DOUBLE)"
+        lag_max = "CAST(NULL AS DOUBLE)"
+        lag_neg = "CAST(NULL AS DOUBLE)"
+
+        if arrival_column and name != arrival_column:
+            lag_base = "SELECT DATEDIFF(arrival_date, d_valid) AS lag_days FROM base WHERE arrival_date IS NOT NULL AND d_valid IS NOT NULL"
+            lag_select = f"(SELECT percentile_approx(lag_days, 0.5) FROM ({lag_base}) l)"
+            lag_select_90 = f"(SELECT percentile_approx(lag_days, 0.9) FROM ({lag_base}) l)"
+            lag_select_95 = f"(SELECT percentile_approx(lag_days, 0.95) FROM ({lag_base}) l)"
+            lag_max = f"(SELECT MAX(lag_days) FROM ({lag_base}) l)"
+            lag_neg = f"(SELECT AVG(CASE WHEN lag_days < 0 THEN 1.0 ELSE 0.0 END) FROM ({lag_base}) l)"
+
+        current_median = "CAST(NULL AS DOUBLE)"
+        if is_scd2:
+            current_median = (
+                "(SELECT percentile_approx(cnt, 0.5) "
+                " FROM (SELECT d_valid AS d, COUNT(*) AS cnt"
+                "       FROM base"
+                "       WHERE d_valid IS NOT NULL AND end_at IS NULL AND d_valid >= DATE_SUB(current_date(), 30)"
+                "       GROUP BY d_valid) cd)"
+            )
+
+        piece = f"""
+        SELECT
+            '{name}' AS column_name,
+            '{dtype}' AS dtype,
+            AVG(CASE WHEN raw_v IS NULL THEN 1.0 ELSE 0.0 END) AS null_ratio,
+            AVG(CASE WHEN d_raw IS NOT NULL THEN 1.0 ELSE 0.0 END) AS parse_ratio,
+            COUNT(DISTINCT d_valid) AS distinct_days,
+            CAST(MIN(d_valid) AS STRING) AS min_date,
+            CAST(MAX(d_valid) AS STRING) AS max_date,
+            AVG(CASE WHEN d_valid > DATE_ADD(current_date(), 1) THEN 1.0 ELSE 0.0 END) AS future_ratio,
+            (
+                SELECT percentile_approx(cnt, 0.5)
+                FROM (
+                    SELECT d_valid AS d, COUNT(*) AS cnt
+                    FROM base
+                    WHERE d_valid IS NOT NULL AND d_valid >= DATE_SUB(current_date(), 30)
+                    GROUP BY d_valid
+                ) d0
+            ) AS rows_per_day_median,
+            (
+                SELECT CASE WHEN AVG(cnt) = 0 THEN NULL ELSE STDDEV_SAMP(cnt) / AVG(cnt) END
+                FROM (
+                    SELECT d_valid AS d, COUNT(*) AS cnt
+                    FROM base
+                    WHERE d_valid IS NOT NULL AND d_valid >= DATE_SUB(current_date(), 30)
+                    GROUP BY d_valid
+                ) d1
+            ) AS rows_per_day_cv,
+            (
+                SELECT
+                    CASE
+                        WHEN prior_med IS NULL OR prior_med = 0 THEN NULL
+                        ELSE recent_rows / prior_med
+                    END
+                FROM (
+                    SELECT
+                        SUM(CASE WHEN d >= DATE_SUB(max_d, 2) THEN cnt ELSE 0 END) AS recent_rows,
+                        percentile_approx(CASE WHEN d < DATE_SUB(max_d, 2) THEN cnt END, 0.5) AS prior_med
+                    FROM (
+                        SELECT d, cnt, MAX(d) OVER () AS max_d
+                        FROM (
+                            SELECT d_valid AS d, COUNT(*) AS cnt
+                            FROM base
+                            WHERE d_valid IS NOT NULL AND d_valid >= DATE_SUB(current_date(), 30)
+                            GROUP BY d_valid
+                        ) dd
+                    ) x
+                ) y
+            ) AS recent_completeness,
+            {lag_select} AS lag_p50,
+            {lag_select_90} AS lag_p90,
+            {lag_select_95} AS lag_p95,
+            {lag_max} AS lag_max,
+            {lag_neg} AS share_negative_lag,
+            {current_median} AS current_rows_per_day_median,
+            (
+                SELECT CONCAT_WS(',', COLLECT_LIST(CAST(d AS STRING)))
+                FROM (
+                    SELECT d_valid AS d
+                    FROM base
+                    WHERE d_valid IS NOT NULL
+                    GROUP BY d_valid
+                    HAVING COUNT(*) >= 10
+                    ORDER BY d DESC
+                    LIMIT {int(max(1, DATE_SAMPLE_LIMIT))}
+                ) ds
+            ) AS sample_dates_csv,
+            {1 if sampled else 0} AS sampled
+        FROM (
+            SELECT
+                {qcol} AS raw_v,
+                {d_expr} AS d_raw,
+                {d_valid} AS d_valid,
+                {arr_expr} AS arrival_date,
+                {"__END_AT" if is_scd2 else "CAST(NULL AS TIMESTAMP)"} AS end_at
+            FROM {src}
+        ) base
+        """
+        pieces.append(piece.strip())
+
+    union_sql = "\nUNION ALL\n".join(pieces)
+    df = execute_query(union_sql)
+    if df.empty:
+        return []
+
+    out = []
+    for _, row in df.iterrows():
+        sample_dates = []
+        raw_csv = str(row.get("sample_dates_csv") or "").strip()
+        if raw_csv:
+            sample_dates = [s[:10] for s in raw_csv.split(",") if s]
+
+        out.append({
+            "name": str(row.get("column_name") or ""),
+            "dtype": str(row.get("dtype") or ""),
+            "parse_ratio": _safe_float(row.get("parse_ratio"), 0.0),
+            "null_ratio": _safe_float(row.get("null_ratio"), 1.0),
+            "distinct_days": _safe_int(row.get("distinct_days"), 0),
+            "min_date": str(row.get("min_date") or "")[:10],
+            "max_date": str(row.get("max_date") or "")[:10],
+            "future_ratio": _safe_float(row.get("future_ratio"), 0.0),
+            "rows_per_day_median": _safe_float(row.get("rows_per_day_median"), 0.0),
+            "rows_per_day_cv": _safe_float(row.get("rows_per_day_cv"), 0.0),
+            "recent_completeness": _safe_float(row.get("recent_completeness"), 0.0),
+            "lag_p50": row.get("lag_p50"),
+            "lag_p90": row.get("lag_p90"),
+            "lag_p95": row.get("lag_p95"),
+            "lag_max": row.get("lag_max"),
+            "share_negative_lag": row.get("share_negative_lag"),
+            "current_rows_per_day_median": row.get("current_rows_per_day_median"),
+            "sampled": bool(_safe_int(row.get("sampled"), 0)),
+            "sample_dates": sample_dates,
+        })
+    return out
 
 
 def profile_date_candidate(fqn: str, column_name: str, dtype_norm: str, sampled: bool, arrival_column: str, is_scd2: bool):
-    qcol = _quote_ident(column_name)
-    pexpr = parse_date_expr(qcol)
-    src = _source_clause(fqn, sampled)
-
-    agg = execute_query(
-        f"""
-        SELECT
-            COUNT(*) AS total_rows,
-            AVG(CASE WHEN {qcol} IS NULL THEN 1.0 ELSE 0.0 END) AS null_ratio,
-            AVG(CASE WHEN {pexpr} IS NOT NULL THEN 1.0 ELSE 0.0 END) AS parse_ratio,
-            COUNT(DISTINCT {pexpr}) AS distinct_days,
-            MIN({pexpr}) AS min_date,
-            MAX({pexpr}) AS max_date,
-            AVG(CASE WHEN {pexpr} > DATE_ADD(current_date(), 1) THEN 1.0 ELSE 0.0 END) AS future_ratio
-        FROM {src}
-        """
+    rows = _profile_candidates_one_query(
+        fqn=fqn,
+        candidates=[{"name": column_name, "dtype": dtype_norm}],
+        arrival_column=arrival_column,
+        is_scd2=is_scd2,
+        sampled=sampled,
     )
-
-    row = agg.iloc[0] if not agg.empty else {}
-    parse_ratio = _safe_float(row.get("parse_ratio"), 0.0)
-    null_ratio = _safe_float(row.get("null_ratio"), 1.0)
-    future_ratio = _safe_float(row.get("future_ratio"), 0.0)
-
-    daily = execute_query(
-        f"""
-        WITH d AS (
-            SELECT {pexpr} AS business_day
-            FROM {src}
-            WHERE {pexpr} IS NOT NULL
-              AND {pexpr} >= DATE_SUB(current_date(), 30)
-        ), c AS (
-            SELECT business_day, COUNT(*) AS cnt
-            FROM d
-            GROUP BY business_day
-        )
-        SELECT
-            percentile_approx(cnt, 0.5) AS rows_per_day_median,
-            CASE WHEN AVG(cnt) = 0 THEN NULL ELSE STDDEV_SAMP(cnt) / AVG(cnt) END AS rows_per_day_cv,
-            SUM(CASE WHEN business_day >= DATE_SUB((SELECT MAX(business_day) FROM c), 2) THEN cnt ELSE 0 END)
-                / NULLIF(percentile_approx(cnt, 0.5), 0) AS recent_completeness
-        FROM c
-        """
-    )
-    drow = daily.iloc[0] if not daily.empty else {}
-
-    lag_metrics = {
+    return rows[0] if rows else {
+        "name": column_name,
+        "dtype": dtype_norm,
+        "parse_ratio": 0.0,
+        "null_ratio": 1.0,
+        "distinct_days": 0,
+        "min_date": "",
+        "max_date": "",
+        "future_ratio": 0.0,
+        "rows_per_day_median": 0.0,
+        "rows_per_day_cv": 0.0,
+        "recent_completeness": 0.0,
         "lag_p50": None,
         "lag_p90": None,
         "lag_p95": None,
         "lag_max": None,
         "share_negative_lag": None,
-    }
-
-    if arrival_column and column_name != arrival_column:
-        arr_expr = parse_date_expr(_quote_ident(arrival_column))
-        lag = execute_query(
-            f"""
-            WITH x AS (
-                SELECT DATEDIFF({arr_expr}, {pexpr}) AS lag_days
-                FROM {src}
-                WHERE {pexpr} IS NOT NULL
-                  AND {arr_expr} IS NOT NULL
-            )
-            SELECT
-                percentile_approx(lag_days, 0.5) AS lag_p50,
-                percentile_approx(lag_days, 0.9) AS lag_p90,
-                percentile_approx(lag_days, 0.95) AS lag_p95,
-                MAX(lag_days) AS lag_max,
-                AVG(CASE WHEN lag_days < 0 THEN 1.0 ELSE 0.0 END) AS share_negative_lag
-            FROM x
-            """
-        )
-        if not lag.empty:
-            lrow = lag.iloc[0]
-            lag_metrics = {
-                "lag_p50": _safe_float(lrow.get("lag_p50"), None),
-                "lag_p90": _safe_float(lrow.get("lag_p90"), None),
-                "lag_p95": _safe_float(lrow.get("lag_p95"), None),
-                "lag_max": _safe_float(lrow.get("lag_max"), None),
-                "share_negative_lag": _safe_float(lrow.get("share_negative_lag"), None),
-            }
-
-    current_rows_per_day_median = None
-    if is_scd2:
-        current_daily = execute_query(
-            f"""
-            WITH d AS (
-                SELECT {pexpr} AS business_day
-                FROM {src}
-                WHERE {pexpr} IS NOT NULL
-                  AND __END_AT IS NULL
-                  AND {pexpr} >= DATE_SUB(current_date(), 30)
-            ), c AS (
-                SELECT business_day, COUNT(*) AS cnt
-                FROM d
-                GROUP BY business_day
-            )
-            SELECT percentile_approx(cnt, 0.5) AS current_rows_per_day_median
-            FROM c
-            """
-        )
-        if not current_daily.empty:
-            current_rows_per_day_median = _safe_float(current_daily.iloc[0].get("current_rows_per_day_median"), None)
-
-    return {
-        "name": column_name,
-        "dtype": dtype_norm,
-        "parse_ratio": parse_ratio,
-        "null_ratio": null_ratio,
-        "distinct_days": _safe_int(row.get("distinct_days"), 0),
-        "min_date": str(row.get("min_date") or "")[:10],
-        "max_date": str(row.get("max_date") or "")[:10],
-        "future_ratio": future_ratio,
-        "rows_per_day_median": _safe_float(drow.get("rows_per_day_median"), 0.0),
-        "rows_per_day_cv": _safe_float(drow.get("rows_per_day_cv"), 0.0),
-        "recent_completeness": _safe_float(drow.get("recent_completeness"), 0.0),
-        "current_rows_per_day_median": current_rows_per_day_median,
+        "current_rows_per_day_median": None,
         "sampled": bool(sampled),
-        **lag_metrics,
+        "sample_dates": [],
     }
 
 
@@ -681,9 +714,9 @@ def _suggested_validation_lag_days(role: str, profile: dict) -> int:
     return 1
 
 
-def _rule_recommendation(profiles: list, arrival_column: str):
+def _rule_recommendation(profiles: list, arrival_column: str, scd2_info: dict):
     if not profiles:
-        return None, "rule", "low", "No valid candidate columns found.", [], 1, False
+        return None, "low", "No valid candidate columns found.", [], 1, False, "AUDIT"
 
     ranked = []
     for p in profiles:
@@ -697,30 +730,43 @@ def _rule_recommendation(profiles: list, arrival_column: str):
             score += 50.0
         else:
             score += 10.0
-
         score += _safe_float(p.get("parse_ratio"), 0.0) * 25.0
         score += (1.0 - min(1.0, _safe_float(p.get("null_ratio"), 1.0))) * 15.0
         score += min(1.0, _safe_float(p.get("recent_completeness"), 0.0)) * 10.0
         score += min(1.0, _safe_float(p.get("distinct_days"), 0) / 365.0) * 5.0
-
         if role == "LIFECYCLE":
             score -= 20.0
-
         ranked.append((score, p))
 
     ranked.sort(key=lambda x: x[0], reverse=True)
     top = ranked[0][1]
+    top_role = str(top.get("role") or "AUDIT")
 
-    suggested_lag = _suggested_validation_lag_days(top.get("role"), top)
-    use_current = bool(top.get("role") == "EVENT" and arrival_column and top.get("name") != arrival_column)
+    suggested_lag = _suggested_validation_lag_days(top_role, top)
+    use_current = bool(top_role == "EVENT" and scd2_info.get("is_scd2") and arrival_column and top.get("name") != arrival_column)
 
     explanation = (
         f"{top.get('name')} has parse {top.get('parse_ratio', 0.0) * 100:.1f}%, "
-        f"null {top.get('null_ratio', 1.0) * 100:.1f}%"
+        f"null {top.get('null_ratio', 1.0) * 100:.1f}%, "
+        f"recent completeness {top.get('recent_completeness', 0.0):.2f}."
     )
-    if top.get("lag_p90") is not None:
-        explanation += f", lag p90 {top.get('lag_p90'):.1f} days"
-    explanation += "."
+
+    if top_role == "ARRIVAL" and scd2_info.get("is_scd2"):
+        alt_event = None
+        for _, p in ranked[1:]:
+            if str(p.get("role") or "") == "EVENT":
+                alt_event = p
+                break
+        if alt_event is not None:
+            explanation = (
+                "Table is SCD2; __START_AT marks when each change arrived, so each day's slice is complete after 1 day. "
+                f"'{alt_event.get('name')}' is an event date but 90% of rows arrive within { _safe_float(alt_event.get('lag_p90'), 0.0):.0f} days."
+            )
+        else:
+            explanation = (
+                "Table is SCD2; __START_AT marks when each change arrived, "
+                "so each day's slice is complete after 1 day."
+            )
 
     alternatives = []
     for _, p in ranked[1:4]:
@@ -728,10 +774,10 @@ def _rule_recommendation(profiles: list, arrival_column: str):
         if p.get("role") == "LIFECYCLE":
             why_not = "Lifecycle-style date is likely not a stable business-day slice"
         elif p.get("lag_p90") is not None and _safe_float(p.get("lag_p90"), 0.0) > suggested_lag:
-            why_not = f"Late-arrival lag p90 {p.get('lag_p90'):.1f} may require larger validation lag"
+            why_not = f"Late-arrival lag p90 {_safe_float(p.get('lag_p90'), 0.0):.1f} may require larger validation lag"
         alternatives.append({"column": p.get("name"), "why_not": why_not})
 
-    return top.get("name"), "rule", "medium", explanation[:220], alternatives, suggested_lag, use_current
+    return top.get("name"), "medium", explanation[:260], alternatives, suggested_lag, use_current, top_role
 
 
 def _extract_model_content(response_data: dict) -> str:
@@ -786,12 +832,14 @@ def _validate_payload_allow_list(payload: dict):
         "recent_completeness", "lag_p50", "lag_p90", "lag_p95", "lag_max", "share_negative_lag", "sample_dates",
     }
 
-    if set(payload.keys()) - top_allowed:
-        raise ValueError("Payload has non-allow-listed top-level keys")
+    extra_top = set(payload.keys()) - top_allowed
+    if extra_top:
+        raise ValueError(f"non-allow-listed top-level keys: {sorted(extra_top)}")
 
     for c in payload.get("candidates", []):
-        if set(c.keys()) - cand_allowed:
-            raise ValueError("Payload has non-allow-listed candidate keys")
+        extra_c = set(c.keys()) - cand_allowed
+        if extra_c:
+            raise ValueError(f"non-allow-listed candidate keys: {sorted(extra_c)}")
 
 
 def llm_date_recommendation(fqn: str, payload: dict, valid_candidates: set):
@@ -819,20 +867,18 @@ def llm_date_recommendation(fqn: str, payload: dict, valid_candidates: set):
         "use current versions only. Never choose lifecycle columns (created/start/end) unless nothing else exists."
     )
 
-    user_payload = json.dumps(payload, ensure_ascii=True)
     body = {
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_payload},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
         ],
         "temperature": 0,
         "max_tokens": 500,
     }
 
     try:
-        url = f"{host}/serving-endpoints/{DATE_LLM_ENDPOINT}/invocations"
         resp = requests.post(
-            url,
+            f"{host}/serving-endpoints/{DATE_LLM_ENDPOINT}/invocations",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json=body,
             timeout=DATE_LLM_TIMEOUT_SECONDS,
@@ -865,10 +911,7 @@ def llm_date_recommendation(fqn: str, payload: dict, valid_candidates: set):
             "confidence": conf,
             "explanation": explanation[:240],
             "alternatives": [
-                {
-                    "column": str(a.get("column") or "").strip(),
-                    "why_not": str(a.get("why_not") or "").strip(),
-                }
+                {"column": str(a.get("column") or "").strip(), "why_not": str(a.get("why_not") or "").strip()}
                 for a in alts[:5]
                 if str(a.get("column") or "").strip()
             ],
@@ -878,36 +921,32 @@ def llm_date_recommendation(fqn: str, payload: dict, valid_candidates: set):
         return {"used": False, "reason": "exception"}
 
 
-def recommend_date_column(fqn: str, profiles: list, arrival_column: str, llm_payload: dict):
-    rule_rec, source, confidence, explanation, alternatives, suggested_lag, use_current = _rule_recommendation(profiles, arrival_column)
+def recommend_date_column(fqn: str, profiles: list, arrival_column: str, llm_payload: dict, scd2_info: dict):
+    rule_rec, confidence, explanation, alternatives, suggested_lag, use_current, role = _rule_recommendation(
+        profiles,
+        arrival_column,
+        scd2_info,
+    )
 
     valid_candidates = {p.get("name") for p in profiles}
     llm = llm_date_recommendation(fqn, llm_payload, valid_candidates)
     if llm.get("used"):
-        rec = llm.get("recommended_column")
-        # If LLM fails to return alternatives, keep deterministic alternatives.
-        alts = llm.get("alternatives") or alternatives
         return {
-            "recommended_column": rec,
+            "recommended_column": llm.get("recommended_column"),
             "recommended_source": "llm",
-            "role": llm.get("role") or "EVENT",
+            "role": llm.get("role") or role,
             "validation_lag_days": _safe_int(llm.get("validation_lag_days"), suggested_lag),
             "use_current_versions_only": bool(llm.get("use_current_versions_only", use_current)),
             "confidence": llm.get("confidence", confidence),
             "explanation": llm.get("explanation") or explanation,
-            "alternatives": alts,
+            "alternatives": llm.get("alternatives") or alternatives,
             "llm": llm,
-            "rule_fallback": {
-                "recommended_column": rule_rec,
-                "validation_lag_days": suggested_lag,
-            },
         }
 
-    top = next((p for p in profiles if p.get("name") == rule_rec), profiles[0] if profiles else None)
     return {
         "recommended_column": rule_rec,
         "recommended_source": "rule",
-        "role": top.get("role") if top else "AUDIT",
+        "role": role,
         "validation_lag_days": suggested_lag,
         "use_current_versions_only": use_current,
         "confidence": confidence,
@@ -918,6 +957,7 @@ def recommend_date_column(fqn: str, profiles: list, arrival_column: str, llm_pay
 
 
 def analyze_date_columns(fqn: str, reanalyse: bool = False):
+    started = time.time()
     cache_hit = _ANALYSIS_CACHE.get(fqn)
     now = _now_epoch()
     if not reanalyse and cache_hit and (now - cache_hit.get("ts", 0) <= ANALYSIS_CACHE_TTL_SECONDS):
@@ -935,29 +975,23 @@ def analyze_date_columns(fqn: str, reanalyse: bool = False):
     sampled = size_bytes > (5 * 1024 * 1024 * 1024)
 
     commit_pattern = _history_commit_pattern(fqn)
-    scd2 = _scd2_stats(fqn, columns)
+    scd2 = _scd2_stats_one_query(fqn, columns)
     arrival_column = _arrival_column(candidates, scd2, commit_pattern)
 
-    profiles = []
-    for cand in candidates:
-        try:
-            p = profile_date_candidate(
-                fqn,
-                cand["name"],
-                cand["dtype"],
-                sampled,
-                arrival_column,
-                bool(scd2.get("is_scd2")),
-            )
-            p["role"] = _classify_role(p, arrival_column)
-            p["suggested_validation_lag_days"] = _suggested_validation_lag_days(p["role"], p)
-            p["use_current_versions_only"] = bool(
-                p["role"] == "EVENT" and scd2.get("is_scd2") and arrival_column and p.get("name") != arrival_column
-            )
-            p["sample_dates"] = _sample_dates_for_candidate(fqn, p["name"], sampled, DATE_SAMPLE_LIMIT)
-            profiles.append(p)
-        except Exception as e:
-            logger.warning("profile failed for %s.%s: %s", fqn, cand["name"], e)
+    profiles = _profile_candidates_one_query(
+        fqn=fqn,
+        candidates=candidates,
+        arrival_column=arrival_column,
+        is_scd2=bool(scd2.get("is_scd2")),
+        sampled=sampled,
+    )
+
+    for p in profiles:
+        p["role"] = _classify_role(p, arrival_column)
+        p["suggested_validation_lag_days"] = _suggested_validation_lag_days(p["role"], p)
+        p["use_current_versions_only"] = bool(
+            p["role"] == "EVENT" and scd2.get("is_scd2") and arrival_column and p.get("name") != arrival_column
+        )
 
     payload_candidates = []
     for p in profiles:
@@ -997,11 +1031,10 @@ def analyze_date_columns(fqn: str, reanalyse: bool = False):
         "candidates": payload_candidates,
     }
 
-    rec = recommend_date_column(fqn, profiles, arrival_column, llm_payload)
+    rec = recommend_date_column(fqn, profiles, arrival_column, llm_payload, scd2)
 
-    # Mark candidates + excluded list for UI.
-    candidates_ui = []
     profile_map = {p["name"]: p for p in profiles}
+    candidates_ui = []
     for c in candidates:
         p = profile_map.get(c["name"], {})
         candidates_ui.append({
@@ -1049,6 +1082,8 @@ def analyze_date_columns(fqn: str, reanalyse: bool = False):
     }
 
     _ANALYSIS_CACHE[fqn] = {"ts": now, "analysis": analysis}
+    elapsed = time.time() - started
+    logger.info("date advisor analysis complete for %s in %.2fs with %d candidates", fqn, elapsed, len(candidates))
     return analysis
 
 
@@ -1067,10 +1102,8 @@ def dev_helper_barrows(catalog: str = "comms_media_prd", schema: str = "exposure
         payload = analysis.get("allow_list_payload", {})
         payload_text = json.dumps(payload, ensure_ascii=True)
 
-        non_date_leak_markers = [
-            "@", "password", "secret", "token", "ssn", "passport", "address", "phone",
-        ]
-        for marker in non_date_leak_markers:
+        # Safety sanity check: payload contains only allow-listed keys and date strings, never free-form non-date values.
+        for marker in ["@", "password", "secret", "token", "ssn", "passport", "address", "phone"]:
             assert marker not in payload_text.lower(), f"possible payload leakage marker detected: {marker}"
 
         print("=" * 70)
